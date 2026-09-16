@@ -78,7 +78,8 @@ def test_fragmented_mjpeg_and_latest_only_buffer():
     server, _ = serve(payload, chunk_size=7)
     try:
         with MJPEGSource(f"http://127.0.0.1:{server.server_port}", read_timeout=.3) as source:
-            time.sleep(.5)
+            source._thread.join(timeout=5)
+            assert not source._thread.is_alive(), "finite test stream must finish"
             frame = source.read(timeout=1)
             assert frame is not None
             # The reader may have consumed all three before the consumer runs;

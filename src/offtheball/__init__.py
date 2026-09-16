@@ -11,4 +11,4 @@ for key, suffix in {
     os.environ[key] = str(ROOT / suffix)
 os.environ["YOLO_AUTOINSTALL"] = "false"
 os.environ["YOLO_VERBOSE"] = "false"
-__version__ = "0.1.0"
+__version__ = "0.2.0"

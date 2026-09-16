@@ -99,3 +99,17 @@ def test_reset_tracks_keeps_centers_but_reset_forgets_scene():
     classifier.reset()
     assert not classifier.ready
     assert classifier.centers is None
+
+def test_blue_kit_stays_blue_under_lower_brightness():
+    red, blue = (35,35,205), (205,100,65)
+    items = scene_items()
+    t = TeamClassifier(min_samples_per_team=2)
+    warm = frame_with_players([(red,tuple(map(int,items[0].xyxy))),
+                               (blue,tuple(map(int,items[1].xyxy))),
+                               (red,tuple(map(int,items[2].xyxy))),
+                               (blue,tuple(map(int,items[3].xyxy)))])
+    expected = t.update(warm,items)[1]
+    t.reset_tracks()
+    dim = frame_with_players([((130,65,42),tuple(map(int,items[1].xyxy)))])
+    assert t.update(dim,[items[1]]) == [expected]
+

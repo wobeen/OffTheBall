@@ -19,6 +19,7 @@ class Detection:
     team: str | None = None
     trail: tuple[tuple[float, float], ...] = ()
     scene_id: int | None = None
+    field_xy: tuple[float, float] | None = None
 
     def to_dict(self):
         x1, y1, x2, y2 = self.xyxy
@@ -27,7 +28,7 @@ class Detection:
                 "team": self.team, "track_id": self.track_id,
                 "scene_id": self.scene_id,
                 "trail": [list(point) for point in self.trail],
-                "field_xy": None}
+                "field_xy": list(self.field_xy) if self.field_xy is not None else None}
 
 
 class PersonDetector:
@@ -60,7 +61,7 @@ class PersonDetector:
         tracker between calls.  The owning :class:`AnalysisSession` resets
         the predictor tracker whenever a source or scene ends.
         """
-        result = self.model.track(pixels, persist=True, classes=[0],
+        result = self.model.track(pixels, persist=True, tracker='bytetrack.yaml', classes=[0],
                                   conf=self.confidence, imgsz=self.image_size,
                                   device="cpu", verbose=False, save=False)[0]
         detections = self._detections_from_result(result)
@@ -94,6 +95,33 @@ class PersonDetector:
 def annotate(pixels, detections):
     out = pixels.copy()
     h, w = out.shape[:2]
+    # Draw only a few nearest same-team links so a full-pitch view remains readable.
+    measured = []
+    for i, left in enumerate(detections):
+        if left.team not in {"A", "B"} or left.field_xy is None:
+            continue
+        for j in range(i + 1, len(detections)):
+            right = detections[j]
+            if right.team != left.team or right.field_xy is None:
+                continue
+            distance = float(np.linalg.norm(np.asarray(left.field_xy) - np.asarray(right.field_xy)))
+            measured.append((distance, left, right))
+    used = set()
+    for distance, left, right in sorted(measured, key=lambda item: item[0]):
+        key = (id(left), id(right))
+        if key in used or sum(id(item) in used for item in (left, right)):
+            continue
+        if len(used) >= 8:
+            break
+        def foot(item):
+            x1, _, x2, y2 = item.xyxy
+            return (max(0, min(w - 1, round((x1 + x2) / 2))), max(0, min(h - 1, round(y2))))
+        pa, pb = foot(left), foot(right)
+        cv2.line(out, pa, pb, (230, 220, 120), 1, cv2.LINE_AA)
+        mid = ((pa[0] + pb[0]) // 2, (pa[1] + pb[1]) // 2)
+        cv2.putText(out, f"{distance:.1f}m", (mid[0] + 3, mid[1] - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX, .42, (255, 240, 150), 1, cv2.LINE_AA)
+        used.update((id(left), id(right)))
     for item in detections:
         x1, y1, x2, y2 = item.xyxy
         a = (max(0, min(w-1, round(x1))), max(0, min(h-1, round(y1))))

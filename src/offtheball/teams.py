@@ -38,8 +38,8 @@ class TeamClassifier:
         vote_window: int = 7,
         min_crop_width: int = 12,
         min_crop_height: int = 20,
-        outlier_distance: float = 38.0,
-        separation: float = 45.0,
+        outlier_distance: float = 26.0,
+        separation: float = 32.0,
     ) -> None:
         if not isinstance(min_samples_per_team, int) or isinstance(min_samples_per_team, bool) or min_samples_per_team < 1:
             raise ValueError("min_samples_per_team must be a positive integer")
@@ -126,6 +126,8 @@ class TeamClassifier:
             if observation.track_id is None:
                 result.append(team)
                 continue
+            if observation.track_id not in self._votes and len(self._votes) >= 256:
+                self._votes.pop(next(iter(self._votes)))
             votes = self._votes[observation.track_id]
             votes.append(team)
             counts = {label: votes.count(label) for label in ("A", "B")}
@@ -165,7 +167,7 @@ class TeamClassifier:
         crop = frame[top:bottom, left:right]
         ch, cw = crop.shape[:2]
         xa, xb = int(cw * .25), max(int(cw * .75), int(cw * .25) + 1)
-        ya, yb = int(ch * .18), max(int(ch * .68), int(ch * .18) + 1)
+        ya, yb = int(ch * .18), max(int(ch * .48), int(ch * .18) + 1)
         torso = crop[ya:yb, xa:xb]
         if torso.size == 0:
             return None
@@ -176,13 +178,14 @@ class TeamClassifier:
         # center-patch strategy handles green kits too; only reject a sample
         # when most of the patch is turf-like and no chromatic alternative is
         # present.
-        green = (hsv[:, 0] >= 30) & (hsv[:, 0] <= 95) & (hsv[:, 1] >= 45) & (hsv[:, 2] >= 35)
+        green = (hsv[:, 0] >= 30) & (hsv[:, 0] <= 85) & (hsv[:, 1] >= 45) & (hsv[:, 2] >= 35)
         # Skin-colored hands/arms can occupy the lower edge of a loose box.
         # This conservative chroma test leaves saturated red/orange kits in
         # place while removing the common peach skin range.
         skin = ((ycrcb[:, 1] >= 135) & (ycrcb[:, 1] <= 180) &
                 (ycrcb[:, 2] >= 80) & (ycrcb[:, 2] <= 135) &
-                (ycrcb[:, 1] > ycrcb[:, 2] + 8))
+                (ycrcb[:, 1] > ycrcb[:, 2] + 8) &
+                (hsv[:, 0] <= 25) & (hsv[:, 1] < 155))
         usable = pixels[~(green | skin)]
         if len(usable) < max(6, len(pixels) // 12):
             # A strongly green patch is likely field, but retain a green kit
@@ -190,10 +193,16 @@ class TeamClassifier:
             if len(pixels) < 16 or float(np.mean(np.std(pixels.astype(float), axis=0))) > 18:
                 return None
             usable = pixels
+        # Prefer shirt chroma over white numbers/shorts when it is well supported.
+        usable_hsv = cv2.cvtColor(usable.reshape(-1, 1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
+        colored = usable_hsv[:, 1] >= 55
+        if np.count_nonzero(colored) >= max(6, int(len(usable) * .3)):
+            usable = usable[colored]
         lab = cv2.cvtColor(usable.reshape(-1, 1, 3), cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(np.float32)
         # Coordinate-wise medians are stable under small skin/number/logo
         # contamination, including very dark and nearly white shirts.
         feature = np.median(lab, axis=0)
+        feature[0] *= .25  # Lighting changes must not turn a blue kit into a red kit.
         if not np.isfinite(feature).all():
             return None
         try:
@@ -211,11 +220,16 @@ class TeamClassifier:
         # pair that explains the most samples within the outlier radius makes a
         # lone referee/keeper kit unable to become one of the two team centers.
         best: tuple[int, float, np.ndarray, np.ndarray] | None = None
-        for i in range(len(data) - 1):
-            for j in range(i + 1, len(data)):
-                if float(np.linalg.norm(data[i] - data[j])) < self.separation:
+        _, candidates = np.unique(np.round(data / 12).astype(int), axis=0, return_index=True)
+        candidates = np.sort(candidates)
+        if len(candidates) > 16:
+            candidates = candidates[np.linspace(0, len(candidates)-1, 16).astype(int)]
+        seeds = data[candidates]
+        for i in range(len(seeds) - 1):
+            for j in range(i + 1, len(seeds)):
+                if float(np.linalg.norm(seeds[i] - seeds[j])) < self.separation:
                     continue
-                centers = np.stack((data[i], data[j]))
+                centers = np.stack((seeds[i], seeds[j]))
                 for _ in range(12):
                     distances = np.linalg.norm(data[:, None, :] - centers[None, :, :], axis=2)
                     labels = np.argmin(distances, axis=1)
@@ -254,4 +268,6 @@ class TeamClassifier:
         assert self._centers is not None
         distances = [float(np.linalg.norm(feature - center)) for center in self._centers]
         index = int(np.argmin(distances))
+        if abs(distances[0] - distances[1]) < 8:
+            return (None, float("inf"))
         return ("A", distances[0]) if index == 0 else ("B", distances[1])

@@ -20,7 +20,7 @@ def create_run_directory():
 
 
 def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
-                  team_classifier=None):
+                  team_classifier=None, calibration=None):
     stop = stop or Event()
     output_dir = Path(output_dir) if output_dir else create_run_directory()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -37,7 +37,7 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
     started = time.perf_counter()
     status = "failed"
     error = None
-    session = AnalysisSession(detector, team_classifier)
+    session = AnalysisSession(detector, team_classifier, calibration=calibration)
     try:
         with VideoSource(path) as source, data_path.open("x", encoding="utf-8") as records:
             fps = source.fps
@@ -76,7 +76,8 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
                        "encoded_image_size": [encoded.shape[1], encoded.shape[0]],
                        "detections": [d.to_dict() for d in detections],
                        "scene_id": session.scene_id,
-                       "calibration_status": "not_calibrated", "processing_s": seconds,
+                       "calibration_status": "active" if calibration is not None else "not_calibrated",
+                       "processing_s": seconds,
                        "input_status": "black_frame" if black else "available"}
                 records.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                 count += 1
@@ -100,7 +101,7 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
                    "processing_p95_ms": float(np.percentile(elapsed_samples, 95) * 1000)
                    if elapsed_samples else None,
                    "source": str(Path(path).resolve()), "audio_included": False,
-                   "scope": "ByteTrack person IDs and temporary team labels; screen-pixel trails only; no metric distance or identity claims"}
+                   "scope": "ByteTrack person IDs, temporary team labels, and optional fixed-camera field coordinates; no identity claims"}
         summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2,
                                            allow_nan=False), encoding="utf-8")
     return output_dir, summary

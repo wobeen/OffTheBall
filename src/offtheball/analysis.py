@@ -20,19 +20,23 @@ class AnalysisSession:
     """
 
     def __init__(self, detector: Any, team_classifier: Any | None = None,
-                 *, max_gap_s: float = 2.0, trail_length: int = 15) -> None:
+                 *, calibration: Any | None = None, max_gap_s: float = 2.0,
+                 trail_length: int = 15) -> None:
         self.detector = detector
         self.team_classifier = team_classifier if team_classifier is not None else self._new_team_classifier()
         self.max_gap_s = float(max_gap_s)
         self.trail_length = max(1, int(trail_length))
+        self.calibration = calibration
         self.scene_id = 0
         self._last_timestamp: float | None = None
         self._last_size: tuple[int, int] | None = None
         self._last_small: np.ndarray | None = None
         self._had_valid_frame = False
+        self._last_hist = None
         self._trails: dict[int, deque[tuple[float, float]]] = defaultdict(
             lambda: deque(maxlen=self.trail_length)
         )
+        self._last_seen = {}
         self._reset_detector_tracking()
 
     @staticmethod
@@ -56,7 +60,7 @@ class AnalysisSession:
             reset()
 
     def _reset_team(self) -> None:
-        reset = getattr(self.team_classifier, "reset", None)
+        reset = getattr(self.team_classifier, "reset_tracks", None) or getattr(self.team_classifier, "reset", None)
         if callable(reset):
             reset()
 
@@ -67,6 +71,8 @@ class AnalysisSession:
         self._last_small = None
         self._had_valid_frame = False
         self._trails.clear()
+        self._last_seen.clear()
+        self._last_hist = None
         self._reset_detector_tracking()
         self._reset_team()
 
@@ -74,20 +80,30 @@ class AnalysisSession:
         """Reset a source session, including underlying ByteTrack state."""
         self.reset_scene()
         self._last_size = None
+        reset = getattr(self.team_classifier, "reset", None)
+        if callable(reset):
+            reset()
 
     @staticmethod
     def _small_frame(frame: np.ndarray) -> np.ndarray:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        return cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA).astype(np.float32)
+        small = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_LINEAR)
+        return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+
+    @staticmethod
+    def _histogram(frame):
+        small = cv2.resize(frame, (96, 54), interpolation=cv2.INTER_AREA)
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        hist = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
+        return cv2.normalize(hist, hist)
 
     def _is_scene_cut(self, frame: np.ndarray) -> bool:
         if self._last_small is None:
             return False
-        current = self._small_frame(frame)
-        diff = np.abs(current - self._last_small)
-        # Require a large change across most of the image.  This avoids
-        # resetting on normal pans and players moving through the camera.
-        return float(diff.mean()) >= 62.0 and float((diff >= 42.0).mean()) >= 0.78
+        diff = np.abs(self._small_frame(frame) - self._last_small)
+        strong_change = float(diff.mean()) >= 62.0 and float((diff >= 42.0).mean()) >= .78
+        histogram_change = self._last_hist is not None and cv2.compareHist(
+            self._histogram(frame), self._last_hist, cv2.HISTCMP_BHATTACHARYYA) > .33
+        return bool(strong_change or (float(diff.mean()) > 18.0 and histogram_change))
 
     def _should_reset(self, frame) -> bool:
         timestamp = float(frame.timestamp_s)
@@ -142,8 +158,14 @@ class AnalysisSession:
         self._last_size = (int(frame.width), int(frame.height))
         self._last_timestamp = float(frame.timestamp_s)
         self._last_small = self._small_frame(frame.pixels)
+        self._last_hist = self._histogram(frame.pixels)
         self._had_valid_frame = True
 
+        now = float(frame.timestamp_s)
+        for key in list(self._last_seen):
+            if now - self._last_seen[key] > self.max_gap_s:
+                self._last_seen.pop(key, None)
+                self._trails.pop(key, None)
         raw = self._call_detector(frame.pixels)
         labels = self._team_labels(frame, raw)
         output: list[Detection] = []
@@ -152,11 +174,32 @@ class AnalysisSession:
             track_id = item.track_id
             trail: tuple[tuple[float, float], ...] = ()
             if track_id is not None:
+                self._last_seen[int(track_id)] = now
                 history = self._trails[int(track_id)]
                 x1, y1, x2, y2 = item.xyxy
                 history.append(((x1 + x2) / 2.0, y2))
                 trail = tuple(history)
-            output.append(replace(item, team=team, trail=trail, scene_id=self.scene_id))
+            field_xy = None
+            if self.calibration is not None:
+                x1, y1, x2, y2 = item.xyxy
+                try:
+                    projected = self.calibration.project(
+                        [[(x1 + x2) / 2.0, y2]],
+                        image_size=(frame.width, frame.height),
+                        frame_id=self.calibration.frame_id,
+                    )[0]
+                    if np.isfinite(projected).all():
+                        field_xy = (float(projected[0]), float(projected[1]))
+                except (ValueError, AttributeError):
+                    # A stale calibration must not stop detection; its status is
+                    # reported by the caller and field_xy remains unavailable.
+                    field_xy = None
+            output.append(replace(item, team=team, trail=trail,
+                                  scene_id=self.scene_id, field_xy=field_xy))
+        while len(self._last_seen) > 256:
+            oldest = min(self._last_seen, key=self._last_seen.get)
+            self._last_seen.pop(oldest)
+            self._trails.pop(oldest, None)
         return output
 
 

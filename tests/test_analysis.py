@@ -74,3 +74,47 @@ def test_backward_timestamp_starts_new_scene():
     session = AnalysisSession(FakeDetector(), FakeTeams())
     assert session.process(frame(timestamp=2.0))[0].scene_id == 0
     assert session.process(frame(timestamp=1.0))[0].scene_id == 1
+
+def test_scene_reset_keeps_kit_centers_but_clears_identity():
+    class PersistentTeams(FakeTeams):
+        def __init__(self):
+            super().__init__()
+            self.track_resets = 0
+        def reset_tracks(self):
+            self.track_resets += 1
+    teams = PersistentTeams()
+    session = AnalysisSession(FakeDetector(), teams)
+    session.process(frame(value=30, timestamp=0))
+    cut = session.process(frame(value=230, timestamp=.1))[0]
+    assert cut.scene_id == 1
+    assert len(cut.trail) == 1
+    assert teams.track_resets == 1
+    assert teams.resets == 0
+    session.reset()
+    assert teams.resets == 1
+
+
+def test_absent_track_histories_expire_in_long_scene():
+    class NewIds(FakeDetector):
+        def track(self, pixels):
+            self.calls += 1
+            return [Detection((10.,10.,30.,40.), .9, track_id=self.calls)]
+    session = AnalysisSession(NewIds(), FakeTeams())
+    for i in range(100):
+        session.process(frame(timestamp=i*.1))
+    assert len(session._trails) <= 22
+    assert 1 not in session._trails
+
+
+def test_fixed_calibration_adds_field_coordinates_to_detections():
+    class FixedCalibration:
+        frame_id = "fixed-camera"
+
+        def project(self, points, *, image_size, frame_id):
+            assert image_size == (80, 60)
+            assert frame_id == self.frame_id
+            return np.asarray(points, dtype=float) / 10.0
+
+    detection = AnalysisSession(FakeDetector(), FakeTeams(), calibration=FixedCalibration()).process(frame())[0]
+    assert detection.field_xy == (1.4, 2.5)
+    assert detection.to_dict()["field_xy"] == [1.4, 2.5]

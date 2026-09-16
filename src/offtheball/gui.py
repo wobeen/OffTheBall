@@ -18,6 +18,7 @@ from .detection import PersonDetector, annotate
 from .analysis import AnalysisSession
 from .pipeline import analyze_video, create_run_directory
 from .quality import is_black_frame
+from .metrics import metric_log
 
 BG = "#101821"
 PANEL = "#192532"
@@ -42,11 +43,12 @@ class App:
         self.frames = queue.Queue(maxsize=1)
         self.events = queue.Queue()
         self.detector = None
+        self.calibration = None
         self.photo = None
         self.display = None
         self.closing = False
         self.status = tk.StringVar(value="영상을 선택하면 시작할 수 있습니다.")
-        self.detail = tk.StringVar(value="사람 탐지 기준 버전 · 0.1")
+        self.detail = tk.StringVar(value="팀 분류 · 선수 추적 · 0.2")
         self.file_label = tk.StringVar(value="선택한 영상 없음")
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -58,12 +60,12 @@ class App:
         style.configure("TButton", font=("맑은 고딕", 10), padding=9,
                         background="#263849", foreground=TEXT)
         style.map("TButton", background=[("active", "#385269"), ("disabled", "#202832")])
-        header = tk.Frame(self.root, bg=BG, padx=24, pady=18)
+        header = tk.Frame(self.root, bg=BG, padx=24, pady=8)
         header.pack(fill="x")
-        tk.Label(header, text="OFF THE BALL", font=("Segoe UI", 23, "bold"),
+        tk.Label(header, text="OFF THE BALL", font=("Segoe UI", 19, "bold"),
                  fg=ACCENT, bg=BG).pack(anchor="w")
         tk.Label(header, text="축구 영상의 움직임을 읽는 첫 단계",
-                 fg=MUTED, bg=BG, font=("맑은 고딕", 11)).pack(anchor="w")
+                 fg=MUTED, bg=BG, font=("맑은 고딕", 10)).pack(anchor="w")
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=20)
         side = tk.Frame(body, bg=PANEL, width=265, padx=17, pady=18)
@@ -87,16 +89,36 @@ class App:
                  font=("맑은 고딕", 11, "bold")).pack(anchor="w", pady=(18, 7))
         self.cal_button = ttk.Button(side, text="현재 장면 거리 보정", command=self.calibrate)
         self.cal_button.pack(fill="x")
-        tk.Label(side, text="알고 있는 경기장 지점으로 보정한 뒤\n두 지점의 거리를 측정합니다.",
+        self.board_button = ttk.Button(side, text="전술 보드 표시", command=self.toggle_board)
+        self.board_button.pack(fill="x", pady=4)
+        self.formation_button = ttk.Button(side, text="기준 배치 설정", command=self.open_formation)
+        self.formation_button.pack(fill="x", pady=4)
+        tk.Label(side, text="고정 카메라의 경기장 지점을 한 번 보정하면\n영상 전체에서 미터 좌표를 계산합니다.",
                  bg=PANEL, fg=MUTED, justify="left", font=("맑은 고딕", 9)).pack(anchor="w", pady=10)
         ttk.Button(side, text="결과 폴더 열기", command=self.open_outputs).pack(fill="x", pady=(12, 0))
-        tk.Label(side, text="현재 기능\n사람 탐지 · ByteTrack 추적\n팀 A/B 색상 · 화면상 궤적\n정지 장면의 수동 거리 측정\n\nA 파랑 · B 빨강 · ? 미확인",
+        tk.Label(side, text="현재 기능\n사람 탐지 · 임시 번호 추적\n팀 A/B 색상 · 화면상 궤적\n정지 장면의 수동 거리 측정\n\nA 파랑 · B 빨강 · ? 미확인",
                  bg=PANEL, fg=MUTED, justify="left",
                  font=("맑은 고딕", 9)).pack(anchor="w", pady=12)
         view = tk.Frame(body, bg=PANEL)
         view.pack(side="left", fill="both", expand=True)
         self.canvas = tk.Canvas(view, bg="#0a1118", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        board_panel = tk.Frame(view, bg="#0d3b24", width=320, height=420)
+        board_panel.pack(side="right", fill="y")
+        board_panel.pack_propagate(False)
+        tk.Label(board_panel, text="전술 보드", bg="#0d3b24", fg="white",
+                 font=("맑은 고딕", 11, "bold")).pack(pady=(10, 4))
+        self.board = tk.Canvas(board_panel, bg="#11833a", width=300, height=225,
+                               highlightthickness=0)
+        self.board.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(board_panel, text="실시간 분석 로그", bg="#0d3b24", fg="white",
+                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=10)
+        self.board_log = tk.Text(board_panel, height=7, bg="#092b1a", fg="#d8f3df",
+                                 relief="flat", state="disabled", wrap="word",
+                                 font=("Consolas", 8))
+        self.board_log.pack(fill="both", expand=True, padx=10, pady=(3, 8))
+        self.board_panel = board_panel
+        self.board_panel.pack_forget()
         self.canvas.bind("<Configure>", lambda e: self.paint())
         self.canvas.create_text(300, 200, text="경기 영상을 선택하세요",
                                 fill=MUTED, font=("맑은 고딕", 18), tags="empty")
@@ -110,9 +132,28 @@ class App:
 
     def controls(self, running):
         for button in (self.open_button, self.run_button, self.screen_button,
-                       self.tablet_button, self.cal_button):
+                       self.tablet_button, self.cal_button, self.board_button,
+                       self.formation_button):
             button.configure(state="disabled" if running else "normal")
         self.stop_button.configure(state="normal" if running else "disabled")
+
+    def toggle_board(self):
+        if self.board_panel.winfo_manager():
+            self.board_panel.pack_forget()
+            self.board_button.configure(text="전술 보드 표시")
+        else:
+            self.board_panel.pack(side="right", anchor="ne", padx=8, pady=8)
+            self.board_button.configure(text="전술 보드 숨기기")
+            self.paint_board()
+
+    def open_formation(self):
+        if self.busy():
+            return
+        FormationWindow(self.root, on_saved=self._formation_saved)
+
+    def _formation_saved(self, payload):
+        self.formation = payload
+        self.status.set("기준 배치를 저장했습니다. 선수 간 기준 거리와 팀 폭을 계산할 수 있습니다.")
 
     def open_video(self):
         if self.busy():
@@ -191,6 +232,7 @@ class App:
             detector = self.get_detector()
             output, summary = analyze_video(
                 path, detector, stop=self.stop,
+                calibration=self.calibration,
                 on_frame=lambda rendered, row, raw: self.publish(rendered, raw, row))
             self.events.put(("result", (output, summary)))
         self.launch_worker(run)
@@ -213,8 +255,9 @@ class App:
             return
         def run():
             detector = self.get_detector()
-            session = AnalysisSession(detector)
-            self.events.put(("status", "화면 분석 중 · 거리 미보정 · 중지를 누르면 종료합니다."))
+            session = AnalysisSession(detector, calibration=self.calibration)
+            self.events.put(("status", "화면 분석 중 · 고정 카메라 보정 적용" if self.calibration else
+                             "화면 분석 중 · 거리 미보정 · 중지를 누르면 종료합니다."))
             with ScreenSource(region) as source:
                 while not self.stop.is_set():
                     tick = time.monotonic()
@@ -252,7 +295,7 @@ class App:
 
         def run():
             detector = self.get_detector()
-            session = AnalysisSession(detector)
+            session = AnalysisSession(detector, calibration=self.calibration)
             self.events.put(("status", f"태블릿 카메라 연결 중 · {redact_url(source.url)}"))
             try:
                 with source:
@@ -365,6 +408,69 @@ class App:
         self.photo = ImageTk.PhotoImage(image)
         self.canvas.delete("all")
         self.canvas.create_image(w//2, h//2, image=self.photo, anchor="center")
+        self.paint_board()
+
+    def paint_board(self):
+        if not hasattr(self, "board"):
+            return
+        self.board.delete("all")
+        bw = max(self.board.winfo_width(), 180)
+        bh = max(self.board.winfo_height(), 240)
+        pad = 18
+        left, top, right, bottom = pad, pad, bw - pad, bh - pad
+        self.board.create_rectangle(left, top, right, bottom, outline="white", width=2)
+        mid = (left + right) / 2
+        self.board.create_line(mid, top, mid, bottom, fill="white")
+        self.board.create_oval(mid - (right-left)*.115, (top+bottom)/2 - (bottom-top)*.115,
+                               mid + (right-left)*.115, (top+bottom)/2 + (bottom-top)*.115,
+                               outline="white")
+        for x in (left, right):
+            self.board.create_rectangle(x, (top+bottom)/2-(bottom-top)*.20,
+                                        x + (right-left)*(.13 if x == left else -.13),
+                                        (top+bottom)/2+(bottom-top)*.20, outline="white")
+        detections = getattr(self, "last_info", {}).get("detections", [])
+        info = getattr(self, "last_info", {})
+        if hasattr(self, "board_log") and detections:
+            teams = {key: sum(item.get("team") == key for item in detections) for key in ("A", "B")}
+            calibrated = sum(bool(item.get("field_xy")) for item in detections)
+            stamp = info.get("source_time_s", info.get("received_time_s", 0.0))
+            line = (f"{float(stamp):6.1f}s  선수 {len(detections):2d}  "
+                    f"A {teams['A']:2d} / B {teams['B']:2d} / 좌표 {calibrated:2d}\n")
+            self.board_log.configure(state="normal")
+            self.board_log.insert("end", line)
+            if calibrated >= 2:
+                self.board_log.insert("end", f"         {metric_log(detections)}\n")
+            self.board_log.see("end")
+            # Keep the live panel bounded during long sessions.
+            if int(self.board_log.index("end-1c").split(".")[0]) > 80:
+                self.board_log.delete("1.0", "20.0")
+            self.board_log.configure(state="disabled")
+        if not detections:
+            self.board.create_text((left+right)/2, bottom+20, text="선수 위치 대기 중",
+                                   fill="white", font=("맑은 고딕", 9))
+            return
+        # Use calibrated metres when available; otherwise keep a clearly labelled
+        # normalized screen estimate so the board remains useful during setup.
+        calibrated = any(item.get("field_xy") for item in detections)
+        for item in detections:
+            field = item.get("field_xy")
+            if field and len(field) == 2:
+                x, y = float(field[0]), float(field[1])
+                px = left + (x / 105.0) * (right-left)
+                py = bottom - (y / 68.0) * (bottom-top)
+            else:
+                box = item.get("xyxy") or [0, 0, 0, 0]
+                px = left + ((box[0]+box[2]) / 2.0 / max(1, self.last_raw.shape[1])) * (right-left)
+                py = top + (box[3] / max(1, self.last_raw.shape[0])) * (bottom-top)
+            px, py = max(left+4, min(right-4, px)), max(top+4, min(bottom-4, py))
+            team = item.get("team")
+            color = "#4aa3ff" if team == "A" else "#ff5b5b" if team == "B" else "#b7c2c9"
+            self.board.create_oval(px-8, py-8, px+8, py+8, fill=color, outline="white")
+            label = str(item.get("track_id") or "?")
+            self.board.create_text(px, py, text=label, fill="white", font=("Segoe UI", 8, "bold"))
+        self.board.create_text((left+right)/2, bottom+20,
+                               text="미터 기준" if calibrated else "화면 기준 · 보정 필요",
+                               fill="white", font=("맑은 고딕", 9))
 
     def calibrate(self):
         if self.busy():
@@ -376,7 +482,12 @@ class App:
         if is_black_frame(raw):
             messagebox.showinfo("입력 확인", "검은 화면은 경기장 거리 보정에 사용할 수 없습니다.")
             return
-        CalibrationWindow(self.root, raw.copy())
+        CalibrationWindow(self.root, raw.copy(), on_saved=self._set_calibration)
+
+    def _set_calibration(self, calibration):
+        self.calibration = calibration
+        self.status.set("고정 카메라 보정이 준비되었습니다. 다음 분석부터 미터 좌표를 기록합니다.")
+        self.detail.set(f"경기장 보정 활성 · {calibration.image_size[0]} × {calibration.image_size[1]} · 미터 좌표 사용 가능")
 
     def open_outputs(self):
         self.last_output.mkdir(parents=True, exist_ok=True)
@@ -391,8 +502,65 @@ class App:
             self.root.destroy()
 
 
+class FormationWindow:
+    """Drag eleven reference players on a 105 x 68 metre pitch."""
+    def __init__(self, parent, on_saved=None):
+        self.on_saved = on_saved
+        self.window = tk.Toplevel(parent)
+        self.window.title("기준 전술 배치 · 105 × 68m")
+        self.window.configure(bg=BG)
+        self.w, self.h = 760, 500
+        self.canvas = tk.Canvas(self.window, width=self.w, height=self.h,
+                                bg="#11833a", highlightthickness=0)
+        self.canvas.pack(padx=14, pady=14)
+        self.positions = [[18 + i * 6, 20 + (i % 3) * 14] for i in range(11)]
+        self.dragging = None
+        self._draw()
+        self.canvas.bind("<Button-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", lambda _e: setattr(self, "dragging", None))
+        bar = tk.Frame(self.window, bg=BG)
+        bar.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(bar, text="기준 배치 저장", command=self._save).pack(side="right")
+
+    def _xy(self, event):
+        return max(0, min(105, event.x / self.w * 105)), max(0, min(68, (self.h-event.y) / self.h * 68))
+
+    def _draw(self):
+        self.canvas.delete("all")
+        self.canvas.create_rectangle(8, 8, self.w-8, self.h-8, outline="white", width=2)
+        self.canvas.create_line(self.w/2, 8, self.w/2, self.h-8, fill="white")
+        self.canvas.create_oval(self.w*.5-55, self.h*.5-55, self.w*.5+55, self.h*.5+55, outline="white")
+        for i, (x, y) in enumerate(self.positions, 1):
+            px, py = x / 105 * self.w, self.h - y / 68 * self.h
+            self.canvas.create_oval(px-14, py-14, px+14, py+14, fill="#4aa3ff", outline="white", tags=f"p{i}")
+            self.canvas.create_text(px, py, text=str(i), fill="white", font=("Segoe UI", 10, "bold"))
+
+    def _press(self, event):
+        x, y = self._xy(event)
+        distances = [((px-x)**2 + (py-y)**2, i) for i, (px, py) in enumerate(self.positions)]
+        distance, index = min(distances)
+        if distance < 80:
+            self.dragging = index
+
+    def _drag(self, event):
+        if self.dragging is not None:
+            self.positions[self.dragging] = list(self._xy(event))
+            self._draw()
+
+    def _save(self):
+        points = [list(map(float, point)) for point in self.positions]
+        data = {"version": 1, "field_size_m": {"length": 105.0, "width": 68.0},
+                "players": points, "team_width_m": max(p[0] for p in points)-min(p[0] for p in points)}
+        path = ROOT / "formation.json"
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if callable(self.on_saved):
+            self.on_saved(data)
+        self.window.destroy()
+
+
 class CalibrationWindow:
-    def __init__(self, parent, pixels):
+    def __init__(self, parent, pixels, on_saved=None):
         from .calibration import ManualCalibration
         self.Calibration = ManualCalibration
         self.pixels = pixels
@@ -402,6 +570,7 @@ class CalibrationWindow:
         self.field = []
         self.measure = []
         self.calibration = None
+        self.on_saved = on_saved
         self.window = tk.Toplevel(parent)
         self.window.title("정지 장면 거리 실험")
         self.window.configure(bg=BG)
@@ -421,7 +590,7 @@ class CalibrationWindow:
         ttk.Button(bar, text="보정 계산", command=self.fit).pack(side="left", padx=8)
         ttk.Button(bar, text="처음부터", command=self.reset).pack(side="left", padx=8)
         ttk.Button(bar, text="보정·장면 저장", command=self.save).pack(side="left", padx=8)
-        tk.Label(self.window, text="정지된 이 장면에만 유효합니다. 다른 시각·카메라 위치에는 적용하지 않습니다.",
+        tk.Label(self.window, text="고정 카메라라면 이 보정을 영상 전체에 재사용할 수 있습니다. 팬·줌·위치 변화 후에는 다시 보정하세요.",
                  bg=BG, fg=MUTED, pady=10).pack()
 
     def click(self, event):
@@ -492,6 +661,8 @@ class CalibrationWindow:
             return
         folder = create_run_directory()
         self.calibration.save(folder / "calibration.json")
+        if callable(self.on_saved):
+            self.on_saved(self.calibration)
         ok, data = cv2.imencode(".png", self.pixels)
         if not ok:
             raise RuntimeError("장면 이미지를 저장할 수 없습니다.")
