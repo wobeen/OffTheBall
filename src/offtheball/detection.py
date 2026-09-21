@@ -149,10 +149,10 @@ class PersonDetector:
                 for box, score in zip(result.boxes.xyxy.cpu().numpy(),
                                       result.boxes.conf.cpu().numpy())]
 
-
 def annotate(pixels, detections):
     out = pixels.copy()
     h, w = out.shape[:2]
+    overlay = out.copy()
     # Draw only a few nearest same-team links so a full-pitch view remains readable.
     measured = []
     for i, left in enumerate(detections):
@@ -188,8 +188,8 @@ def annotate(pixels, detections):
         if len(item.trail) >= 2:
             points = np.asarray(item.trail, dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out, [points], False, color, 2, cv2.LINE_AA)
-        overlay = out.copy()
-        cv2.circle(overlay, (round((a[0]+b[0])/2), b[1]), 60, color, 6)
+        #cv2.circle(overlay, (round((a[0]+b[0])/2), b[1]), 60, color, 6)
+        cv2.ellipse(overlay, (round((a[0]+b[0])/2), b[1]), (8, 3), 0, 0, 360, color, -1)
         alpha = 0.5
         cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
         label = item.team if item.team in {"A", "B"} else "?"
