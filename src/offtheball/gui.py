@@ -232,12 +232,18 @@ class App(DashboardMixin, PlaybackMixin):
             self.pitch_polygon = None
             self.calibration = None
         self.input_key = key
+        self.path = None
+        self.duration = self.playhead = 0.0
+        self.seek_position.set(0)
+        self.time_label.set("LIVE")
         self.file_playback = False
         def run():
             detector = self.get_detector()
             session = AnalysisSession(detector, calibration=self.calibration, pitch_polygon=self.pitch_polygon)
             self.events.put(("status", "화면 분석 중 · 고정 카메라 보정 적용" if self.calibration else
                              "화면 분석 중 · 거리 미보정 · 중지를 누르면 종료합니다."))
+            if self.pitch_polygon is None:
+                self.events.put(("status", "화면 미리보기 · 중지 → 더보기 → 그라운드 영역 선택 후 같은 화면에 다시 연결하세요."))
             with ScreenSource(region) as source:
                 while not self.stop.is_set():
                     tick = time.monotonic()
@@ -280,11 +286,17 @@ class App(DashboardMixin, PlaybackMixin):
             self.pitch_polygon = None
             self.calibration = None
         self.input_key = key
+        self.path = None
+        self.duration = self.playhead = 0.0
+        self.seek_position.set(0)
+        self.time_label.set("LIVE")
         self.file_playback = False
         def run():
             detector = self.get_detector()
             session = AnalysisSession(detector, calibration=self.calibration, pitch_polygon=self.pitch_polygon)
             self.events.put(("status", f"태블릿 카메라 연결 중 · {redact_url(source.url)}"))
+            if self.pitch_polygon is None:
+                self.events.put(("status", "태블릿 미리보기 · 중지 → 더보기 → 그라운드 영역 선택 후 같은 주소에 다시 연결하세요."))
             try:
                 with source:
                     got_frame = False
