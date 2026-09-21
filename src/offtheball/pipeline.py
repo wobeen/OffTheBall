@@ -20,7 +20,7 @@ def create_run_directory():
 
 
 def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
-                  team_classifier=None, calibration=None):
+                  team_classifier=None, calibration=None, pitch_polygon=None):
     stop = stop or Event()
     output_dir = Path(output_dir) if output_dir else create_run_directory()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -37,7 +37,7 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
     started = time.perf_counter()
     status = "failed"
     error = None
-    session = AnalysisSession(detector, team_classifier, calibration=calibration)
+    session = AnalysisSession(detector, team_classifier, calibration=calibration, pitch_polygon=pitch_polygon)
     try:
         with VideoSource(path) as source, data_path.open("x", encoding="utf-8") as records:
             fps = source.fps
