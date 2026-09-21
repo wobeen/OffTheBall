@@ -188,10 +188,13 @@ def annotate(pixels, detections):
         if len(item.trail) >= 2:
             points = np.asarray(item.trail, dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out, [points], False, color, 2, cv2.LINE_AA)
-        cv2.rectangle(out, a, b, color, 2)
-        cv2.circle(out, (round((a[0]+b[0])/2), b[1]), 3, color, -1)
+        overlay = out.copy()
+        cv2.circle(overlay, (round((a[0]+b[0])/2), b[1]), 60, color, 6)
+        alpha = 0.5
+        cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
         label = item.team if item.team in {"A", "B"} else "?"
         suffix = f" #{item.track_id}" if item.track_id is not None else ""
-        cv2.putText(out, f"{label}{suffix} {item.confidence:.2f}", (a[0], max(16, a[1]-5)),
+        cx = round((a[0] + b[0]) / 2)
+        cv2.putText(out, f"{label}{suffix} {item.confidence:.2f}", (cx - 15, b[1] + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, .45, color, 1, cv2.LINE_AA)
     return out
