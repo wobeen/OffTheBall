@@ -1,7 +1,7 @@
 import json
 import numpy as np
 import pytest
-from offtheball.calibration import ManualCalibration
+from offtheball.calibration import AutoPitchCalibration, ManualCalibration
 
 SIZE = (640, 480)
 FRAME = "test-frame"
@@ -99,3 +99,23 @@ def test_three_collinear_of_four_points_rejected():
     points = [[10,10], [20,20], [30,30], [40,10]]
     with pytest.raises(ValueError, match="unique homography"):
         ManualCalibration.fit(points, points, image_size=SIZE, frame_id=FRAME)
+
+
+def test_manual_calibration_reports_stable_diagnostics():
+    report = calibration().diagnostics()
+    assert report["status"] == "active"
+    assert report["source"] == "manual_fixed_frame"
+    assert report["inlier_count"] == 4
+
+
+def test_auto_calibration_reports_staleness_without_hiding_legacy_projection():
+    auto = AutoPitchCalibration(calibration(), stale_after_frames=2)
+    blank = np.zeros((SIZE[1], SIZE[0], 3), dtype=np.uint8)
+    for _ in range(3):
+        assert not auto.update(blank)
+    assert auto.diagnostics()["status"] == "stale"
+    assert auto.diagnostics()["age_frames"] == 3
+    # Diagnostics are additive in this feature; enforcing expiry belongs to
+    # the validated automatic-calibration stage.
+    point = [[250, 200]]
+    np.testing.assert_allclose(auto.project(point, image_size=SIZE, frame_id=FRAME), transform(point), atol=1e-5)

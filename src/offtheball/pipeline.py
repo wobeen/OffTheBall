@@ -72,11 +72,13 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
                 seconds = time.perf_counter() - tick
                 elapsed_samples.append(seconds)
                 row = {"frame_index": frame.index, "source_time_s": frame.timestamp_s,
+                       "schema_version": 2,
                        "image_size": [frame.width, frame.height],
                        "encoded_image_size": [encoded.shape[1], encoded.shape[0]],
                        "detections": [d.to_dict() for d in detections],
                        "scene_id": session.scene_id,
-                       "calibration_status": "active" if calibration is not None else "not_calibrated",
+                       "calibration_status": session.calibration_diagnostics()["status"],
+                       "calibration": session.calibration_diagnostics(),
                        "processing_s": seconds,
                        "input_status": "black_frame" if black else "available"}
                 records.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
@@ -94,7 +96,7 @@ def analyze_video(path, detector, *, stop=None, on_frame=None, output_dir=None,
         if writer is not None:
             writer.release()
         elapsed = time.perf_counter() - started
-        summary = {"status": status, "error": error, "frames": count,
+        summary = {"schema_version": 2, "status": status, "error": error, "frames": count,
                    "black_frames": black_count,
                    "warnings": ["Black input frames present; player absence cannot be inferred."] if black_count else [],
                    "elapsed_s": elapsed, "processing_fps": count / elapsed if elapsed else 0,

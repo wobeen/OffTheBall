@@ -136,6 +136,21 @@ def test_fixed_calibration_adds_field_coordinates_to_detections():
     assert detection.to_dict()["field_xy"] == [1.4, 2.5]
 
 
+def test_calibration_diagnostics_support_legacy_and_missing_calibrators():
+    empty = AnalysisSession(FakeDetector(), FakeTeams())
+    assert empty.calibration_diagnostics()["status"] == "not_calibrated"
+
+    class LegacyCalibration:
+        frame_id = "legacy"
+        def project(self, points, *, image_size, frame_id):
+            return np.asarray(points, dtype=float)
+
+    legacy = AnalysisSession(FakeDetector(), FakeTeams(), calibration=LegacyCalibration())
+    report = legacy.calibration_diagnostics()
+    assert report["status"] == "active"
+    assert report["source"] == "fixed_calibration"
+
+
 def test_pitch_polygon_is_passed_before_tracking_and_excludes_after_resize():
     detector = PolygonDetector()
     polygon = [(5, 5), (55, 5), (55, 50), (5, 50)]

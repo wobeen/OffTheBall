@@ -112,9 +112,12 @@ class PlaybackMixin:
                         if frame is None:
                             break
                         detections = session.process(frame, black=is_black_frame(frame.pixels))
-                        row = {"source_time_s": frame.timestamp_s, "frame_index": frame.index,
+                        row = {"schema_version": 2,
+                               "source_time_s": frame.timestamp_s, "frame_index": frame.index,
                                "scene_id": session.scene_id, "seek_epoch": epoch,
                                "detections": [d.to_dict() for d in detections],
+                               "calibration_status": session.calibration_diagnostics()["status"],
+                               "calibration": session.calibration_diagnostics(),
                                "processing_s": time.monotonic() - tick}
                         records.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                         self.publish(annotate(frame.pixels, detections), frame.pixels, row)
