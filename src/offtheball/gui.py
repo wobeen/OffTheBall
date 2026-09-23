@@ -64,9 +64,60 @@ class App(DashboardMixin, PlaybackMixin):
         return self.worker is not None and self.worker.is_alive()
 
     def open_formation(self):
-        if self.busy():
-            return
         FormationWindow(self.root, on_saved=self._formation_saved)
+
+    def show_help(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("OffTheBall 사용 방법")
+        dialog.geometry("760x650")
+        dialog.minsize(620, 480)
+        dialog.configure(bg=BG)
+        text = tk.Text(dialog, wrap="word", bg="#111c28", fg=TEXT,
+                       insertbackground=TEXT, relief="flat", padx=18, pady=16,
+                       font=("맑은 고딕", 10), spacing1=3, spacing3=7)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        text.pack(fill="both", expand=True, padx=(12, 0), pady=12)
+        text.insert("end", """빠른 시작
+
+1. 영상 열기로 경기 영상을 선택합니다.
+2. 기준 보정을 눌러 영상 좌표를 105 × 68m 경기장 좌표에 연결합니다.
+3. 분석 시작을 누릅니다. 처음에는 그라운드 영역을 둘러 지정합니다.
+4. 분석 중 영상의 선수 표시와 전술 보드의 점이 함께 움직이는지 확인합니다.
+
+기준 보정
+
+전술 보드에 선수를 표시하고 거리·간격을 계산하기 위한 필수 단계입니다. 경기장 선이 넓게 보이는 장면에서 실제 위치를 아는 지점 4개 이상을 선택하고 같은 방향의 X,Y 미터 좌표를 입력하세요. 빠른 동작 확인에는 자동 기준점 찾기를 사용할 수 있지만, 녹색 영역 전체를 경기장 전체로 가정하므로 실제 거리 분석에는 부정확할 수 있습니다.
+
+보정 창에서는 기준점을 입력한 뒤 보정 계산, 보정·장면 저장 순서로 누릅니다. 파일 분석 중 기준 보정을 누르면 현재 프레임에서 자동으로 일시정지합니다. 저장한 보정은 현재 분석에도 적용되며 ▶ 버튼으로 다시 재생할 수 있습니다. 화면·태블릿 입력은 움직이는 실시간 프레임이므로 먼저 중지한 뒤 보정하세요.
+
+그라운드 영역
+
+관중과 벤치 인원이 추적기에 들어오지 않도록 영상에서 실제 경기 영역만 지정합니다. 그라운드 영역 선택과 기준 보정은 서로 다른 기능이며 둘 다 필요합니다.
+
+기준 배치
+
+우리 팀이 기대하는 11명의 위치를 경기장 위에서 드래그해 저장합니다. 분석 중에도 열고 수정할 수 있습니다. 현재는 팀 A의 실제 배치와 비교해 팀 폭과 위치 편차를 계산합니다.
+
+이벤트와 브리핑
+
+분석 중 중요한 장면에서 이벤트 태그를 남기면 브리핑에서 전후 구간의 팀 폭과 배치 편차를 확인할 수 있습니다.
+
+전술 보드에 선수가 보이지 않을 때
+
+• '기준 보정 후 선수 위치가 표시됩니다': 기준 보정을 저장하지 않은 상태입니다.
+• '경기장 좌표로 계산할 수 없습니다': 선수 발 위치가 보정 기준점의 유효 영역 밖일 수 있습니다.
+• 영상을 다시 열면 이전 보정은 초기화됩니다. 같은 영상을 연 상태에서 보정 후 분석하세요.
+• 방송 카메라가 팬·줌·장면 전환되면 한 장면의 수동 보정은 정확하지 않을 수 있습니다.
+
+번호와 분석 결과의 의미
+
+화면의 번호는 실제 등번호나 선수 신원이 아니라 현재 장면 안의 임시 추적 ID입니다. 팀 A/B도 유니폼 색상으로 추정하며 새 입력에서는 대응이 바뀔 수 있습니다.
+""")
+        text.configure(state="disabled")
+        ttk.Button(dialog, text="닫기", command=dialog.destroy,
+                   style="Dashboard.TButton").pack(pady=(0, 12))
 
     def _formation_saved(self, payload):
         self.formation = payload
@@ -437,8 +488,16 @@ class App(DashboardMixin, PlaybackMixin):
         PitchEditor(self.root, self.last_raw.copy(), save)
 
     def calibrate(self):
-        if self.busy():
+        if self.busy() and not self.file_playback:
+            messagebox.showinfo(
+                "분석 중 기준 보정",
+                "화면·태블릿·전체 영상 저장 중에는 현재 입력을 먼저 중지한 뒤 기준 보정을 눌러주세요.",
+            )
             return
+        if self.busy() and self.file_playback:
+            self.playback_paused.set()
+            self.pause_button.configure(text="▶")
+            self.status.set("현재 프레임에서 일시정지했습니다. 기준 보정 후 ▶로 계속할 수 있습니다.")
         raw = self.last_raw
         if raw is None:
             messagebox.showinfo("장면 선택", "먼저 영상을 열거나 화면 분석을 중지하세요.")
@@ -451,7 +510,11 @@ class App(DashboardMixin, PlaybackMixin):
     def _set_calibration(self, calibration):
         from .calibration import AutoPitchCalibration
         self.calibration = AutoPitchCalibration(calibration)
-        self.status.set("고정 카메라 보정이 준비되었습니다. 다음 분석부터 미터 좌표를 기록합니다.")
+        if self.busy() and self.file_playback:
+            self.playback_commands.put(("calibration", self.calibration))
+            self.status.set("기준 보정을 현재 분석에 적용했습니다. ▶를 누르면 전술 보드가 갱신됩니다.")
+        else:
+            self.status.set("고정 카메라 보정이 준비되었습니다. 다음 분석부터 미터 좌표를 기록합니다.")
         self.detail.set(f"경기장 보정 활성 · {calibration.image_size[0]} × {calibration.image_size[1]} · 미터 좌표 사용 가능")
 
     def open_outputs(self):
