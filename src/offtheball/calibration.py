@@ -7,6 +7,47 @@ import cv2
 import numpy as np
 
 
+def suggest_pitch_corners(pixels):
+    """Suggest four image corners from the largest green field-like region."""
+    image = np.asarray(pixels)
+    if image.ndim != 3 or image.shape[2] != 3:
+        return None
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (35, 35, 20), (95, 255, 245))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(contour) < image.shape[0] * image.shape[1] * .12:
+        return None
+    x, y, w, h = cv2.boundingRect(contour)
+    if w < image.shape[1] * .35 or h < image.shape[0] * .25:
+        return None
+    return [[float(x), float(y)], [float(x+w-1), float(y)],
+            [float(x+w-1), float(y+h-1)], [float(x), float(y+h-1)]]
+
+class AutoPitchCalibration:
+    def __init__(self, calibration):
+        self.current = calibration
+        self.frame_id = calibration.frame_id
+        self.image_size = calibration.image_size
+        self._corners = np.asarray(calibration.image_points[:4], dtype=float)
+
+    def update(self, pixels):
+        corners = suggest_pitch_corners(pixels)
+        if corners is None:
+            return False
+        corners = np.asarray(corners, dtype=float)
+        if np.mean(np.linalg.norm(corners - self._corners, axis=1)) < 12:
+            return False
+        self.current = ManualCalibration.fit(corners, [[0,0],[105,0],[105,68],[0,68]], image_size=self.image_size, frame_id=self.frame_id)
+        self._corners = corners
+        return True
+
+    def project(self, points, *, image_size, frame_id):
+        return self.current.project(points, image_size=image_size, frame_id=frame_id)
+
+
 def _points(value, name, minimum=0):
     result = np.asarray(value, dtype=np.float64)
     if result.ndim != 2 or result.shape[1] != 2 or len(result) < minimum or not np.isfinite(result).all():

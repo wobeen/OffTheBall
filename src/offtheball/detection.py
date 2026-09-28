@@ -11,6 +11,25 @@ import numpy as np
 from . import ROOT
 
 
+def _normalise_pitch_polygon(polygon):
+    if polygon is None:
+        return None
+    try:
+        value = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+    except (TypeError, ValueError):
+        return None
+    if len(value) < 3 or not np.isfinite(value).all():
+        return None
+    if abs(float(cv2.contourArea(value.reshape(-1, 1, 2)))) < 1e-3:
+        return None
+    return value
+
+
+def _point_in_polygon(point, polygon):
+    return cv2.pointPolygonTest(polygon.reshape(-1, 1, 2),
+                                (float(point[0]), float(point[1])), False) >= 0
+
+
 @dataclass(frozen=True)
 class Detection:
     xyxy: tuple[float, float, float, float]
@@ -46,6 +65,9 @@ class PersonDetector:
         self.model = YOLO(str(path))
         self.confidence = confidence
         self.image_size = image_size
+        self._pitch_polygon = None
+        self._pitch_filter_installed = False
+        self._tracker_registered = False
 
     def detect(self, pixels):
         """Return raw person detections without tracker state."""
@@ -54,22 +76,58 @@ class PersonDetector:
                                     verbose=False, save=False)[0]
         return self._detections_from_result(result)
 
-    def track(self, pixels):
+    def track(self, pixels, pitch_polygon=None):
         """Return detections with IDs supplied by Ultralytics ByteTrack.
 
         ``persist=True`` is the documented Ultralytics API for keeping the
         tracker between calls.  The owning :class:`AnalysisSession` resets
         the predictor tracker whenever a source or scene ends.
         """
-        result = self.model.track(pixels, persist=True, tracker='bytetrack.yaml', classes=[0],
-                                  conf=self.confidence, imgsz=self.image_size,
-                                  device="cpu", verbose=False, save=False)[0]
+        # Ultralytics runs ByteTrack from a postprocess callback.  Install the
+        # pitch callback before that callback so spectators never enter the
+        # association pool (filtering returned tracks would leave stale IDs).
+        self._pitch_polygon = _normalise_pitch_polygon(pitch_polygon)
+        self._install_pitch_filter()
+        if not self._tracker_registered:
+            from ultralytics.trackers import register_tracker
+            register_tracker(self.model, persist=True)
+            self._tracker_registered = True
+        result = self.model.predict(pixels, mode="track", tracker="bytetrack.yaml", classes=[0],
+                                    conf=self.confidence, imgsz=self.image_size,
+                                    device="cpu", verbose=False, save=False)[0]
         detections = self._detections_from_result(result)
         if result.boxes is None or result.boxes.id is None:
             return detections
         ids = result.boxes.id.cpu().numpy().astype(int).tolist()
         return [Detection(item.xyxy, item.confidence, track_id=track_id)
                 for item, track_id in zip(detections, ids)]
+
+    def _install_pitch_filter(self):
+        if self._pitch_filter_installed:
+            return
+        callbacks = self.model.callbacks["on_predict_postprocess_end"]
+
+        def filter_callback(predictor):
+            polygon = self._pitch_polygon
+            if polygon is None:
+                return
+            for result in predictor.results:
+                boxes = result.boxes
+                if boxes is None or len(boxes) == 0:
+                    continue
+                xyxy = boxes.xyxy.cpu().numpy()
+                points = np.column_stack(((xyxy[:, 0] + xyxy[:, 2]) / 2, xyxy[:, 3]))
+                keep = np.asarray([_point_in_polygon(point, polygon) for point in points], dtype=bool)
+                # Boxes.__getitem__ accepts a mask on the same device as its
+                # tensor; this also keeps CUDA-backed models supported.
+                import torch
+                keep = torch.as_tensor(keep, device=boxes.data.device)
+                result.boxes = boxes[keep]
+
+        # register_tracker identifies its own callback by function identity;
+        # placing ours first keeps this compatible with tracker refreshes.
+        callbacks.insert(0, filter_callback)
+        self._pitch_filter_installed = True
 
     def reset_tracking(self):
         """Clear the underlying Ultralytics tracker state for a new scene."""
@@ -91,10 +149,10 @@ class PersonDetector:
                 for box, score in zip(result.boxes.xyxy.cpu().numpy(),
                                       result.boxes.conf.cpu().numpy())]
 
-
 def annotate(pixels, detections):
     out = pixels.copy()
     h, w = out.shape[:2]
+    overlay = out.copy()
     # Draw only a few nearest same-team links so a full-pitch view remains readable.
     measured = []
     for i, left in enumerate(detections):
@@ -130,10 +188,13 @@ def annotate(pixels, detections):
         if len(item.trail) >= 2:
             points = np.asarray(item.trail, dtype=np.int32).reshape(-1, 1, 2)
             cv2.polylines(out, [points], False, color, 2, cv2.LINE_AA)
-        cv2.rectangle(out, a, b, color, 2)
-        cv2.circle(out, (round((a[0]+b[0])/2), b[1]), 3, color, -1)
+        #cv2.circle(overlay, (round((a[0]+b[0])/2), b[1]), 60, color, 6)
+        cv2.ellipse(overlay, (round((a[0]+b[0])/2), b[1]), (40, 15), 0, 0, 360, color, 6)
+        alpha = 0.5
+        cv2.addWeighted(overlay, alpha, out, 1 - alpha, 0, out)
         label = item.team if item.team in {"A", "B"} else "?"
         suffix = f" #{item.track_id}" if item.track_id is not None else ""
-        cv2.putText(out, f"{label}{suffix} {item.confidence:.2f}", (a[0], max(16, a[1]-5)),
+        cx = round((a[0] + b[0]) / 2)
+        cv2.putText(out, f"{label}{suffix} {item.confidence:.2f}", (cx - 15, b[1] + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, .45, color, 1, cv2.LINE_AA)
     return out

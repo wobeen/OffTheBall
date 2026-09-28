@@ -80,3 +80,22 @@ def test_input_loss_clears_cached_frame_and_canvas(root):
     assert app.display is None
     assert app.last_raw is None
     assert app.canvas.find_all() == ()
+
+
+def test_dashboard_layout_pitch_ratio_and_live_actions(root):
+    app = App(root)
+    root.deiconify()
+    for size in ("1440x900", "1100x740"):
+        root.geometry(size)
+        root.update()
+        app._resize_pitch()
+        root.update_idletasks()
+        assert app.canvas.winfo_width() > app._dashboard_right.winfo_width()
+        assert app.event_tree.winfo_height() > 60
+        assert app._compact_menu.winfo_width() > 35
+        w, h = app.board.winfo_width(), app.board.winfo_height()
+        assert abs((w-24)/(h-24)-105/68) < .03
+        app.controls(True)
+        assert str(app.event_button.cget("state")) == "normal"
+        assert app.progress_canvas.winfo_width() > 100
+    root.withdraw()

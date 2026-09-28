@@ -18,7 +18,10 @@ from .detection import PersonDetector, annotate
 from .analysis import AnalysisSession
 from .pipeline import analyze_video, create_run_directory
 from .quality import is_black_frame
-from .metrics import metric_log
+from .metrics import metric_log, team_metrics, formation_deviation, formation_message
+from .events import EventTimeline, EVENT_LABELS, summarize_event
+from .playback import PlaybackMixin
+from .dashboard import DashboardMixin
 
 BG = "#101821"
 PANEL = "#192532"
@@ -28,7 +31,7 @@ ACCENT = "#8ee5b0"
 TABLET_DEFAULT_URL = "http://10.50.75.89:8080"
 
 
-class App:
+class App(DashboardMixin, PlaybackMixin):
     def __init__(self, root):
         self.root = root
         root.title("OffTheBall · 오프더볼")
@@ -44,107 +47,21 @@ class App:
         self.events = queue.Queue()
         self.detector = None
         self.calibration = None
+        self.event_timeline = EventTimeline()
+        self.analysis_rows = []
         self.photo = None
         self.display = None
         self.closing = False
         self.status = tk.StringVar(value="영상을 선택하면 시작할 수 있습니다.")
         self.detail = tk.StringVar(value="팀 분류 · 선수 추적 · 0.2")
         self.file_label = tk.StringVar(value="선택한 영상 없음")
+        self.init_playback()
         self._build()
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(60, self.poll)
 
-    def _build(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TButton", font=("맑은 고딕", 10), padding=9,
-                        background="#263849", foreground=TEXT)
-        style.map("TButton", background=[("active", "#385269"), ("disabled", "#202832")])
-        header = tk.Frame(self.root, bg=BG, padx=24, pady=8)
-        header.pack(fill="x")
-        tk.Label(header, text="OFF THE BALL", font=("Segoe UI", 19, "bold"),
-                 fg=ACCENT, bg=BG).pack(anchor="w")
-        tk.Label(header, text="축구 영상의 움직임을 읽는 첫 단계",
-                 fg=MUTED, bg=BG, font=("맑은 고딕", 10)).pack(anchor="w")
-        body = tk.Frame(self.root, bg=BG)
-        body.pack(fill="both", expand=True, padx=20)
-        side = tk.Frame(body, bg=PANEL, width=265, padx=17, pady=18)
-        side.pack(side="left", fill="y", padx=(0, 14))
-        side.pack_propagate(False)
-        tk.Label(side, text="01   영상 입력", bg=PANEL, fg=ACCENT,
-                 font=("맑은 고딕", 11, "bold")).pack(anchor="w", pady=(0, 8))
-        self.open_button = ttk.Button(side, text="영상 파일 선택", command=self.open_video)
-        self.open_button.pack(fill="x")
-        tk.Label(side, textvariable=self.file_label, bg=PANEL, fg=MUTED, wraplength=225,
-                 justify="left", font=("맑은 고딕", 9)).pack(fill="x", pady=12)
-        self.run_button = ttk.Button(side, text="영상 분석 시작", command=self.start_video)
-        self.run_button.pack(fill="x", pady=4)
-        self.screen_button = ttk.Button(side, text="화면 영역 분석", command=self.start_screen)
-        self.screen_button.pack(fill="x", pady=4)
-        self.tablet_button = ttk.Button(side, text="태블릿 카메라 연결", command=self.start_tablet)
-        self.tablet_button.pack(fill="x", pady=4)
-        self.stop_button = ttk.Button(side, text="분석 중지", command=self.stop.set, state="disabled")
-        self.stop_button.pack(fill="x", pady=4)
-        tk.Label(side, text="02   정지 장면 실험", bg=PANEL, fg=ACCENT,
-                 font=("맑은 고딕", 11, "bold")).pack(anchor="w", pady=(18, 7))
-        self.cal_button = ttk.Button(side, text="현재 장면 거리 보정", command=self.calibrate)
-        self.cal_button.pack(fill="x")
-        self.board_button = ttk.Button(side, text="전술 보드 표시", command=self.toggle_board)
-        self.board_button.pack(fill="x", pady=4)
-        self.formation_button = ttk.Button(side, text="기준 배치 설정", command=self.open_formation)
-        self.formation_button.pack(fill="x", pady=4)
-        tk.Label(side, text="고정 카메라의 경기장 지점을 한 번 보정하면\n영상 전체에서 미터 좌표를 계산합니다.",
-                 bg=PANEL, fg=MUTED, justify="left", font=("맑은 고딕", 9)).pack(anchor="w", pady=10)
-        ttk.Button(side, text="결과 폴더 열기", command=self.open_outputs).pack(fill="x", pady=(12, 0))
-        tk.Label(side, text="현재 기능\n사람 탐지 · 임시 번호 추적\n팀 A/B 색상 · 화면상 궤적\n정지 장면의 수동 거리 측정\n\nA 파랑 · B 빨강 · ? 미확인",
-                 bg=PANEL, fg=MUTED, justify="left",
-                 font=("맑은 고딕", 9)).pack(anchor="w", pady=12)
-        view = tk.Frame(body, bg=PANEL)
-        view.pack(side="left", fill="both", expand=True)
-        self.canvas = tk.Canvas(view, bg="#0a1118", highlightthickness=0)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        board_panel = tk.Frame(view, bg="#0d3b24", width=320, height=420)
-        board_panel.pack(side="right", fill="y")
-        board_panel.pack_propagate(False)
-        tk.Label(board_panel, text="전술 보드", bg="#0d3b24", fg="white",
-                 font=("맑은 고딕", 11, "bold")).pack(pady=(10, 4))
-        self.board = tk.Canvas(board_panel, bg="#11833a", width=300, height=225,
-                               highlightthickness=0)
-        self.board.pack(fill="x", padx=10, pady=(0, 8))
-        tk.Label(board_panel, text="실시간 분석 로그", bg="#0d3b24", fg="white",
-                 font=("맑은 고딕", 9, "bold")).pack(anchor="w", padx=10)
-        self.board_log = tk.Text(board_panel, height=7, bg="#092b1a", fg="#d8f3df",
-                                 relief="flat", state="disabled", wrap="word",
-                                 font=("Consolas", 8))
-        self.board_log.pack(fill="both", expand=True, padx=10, pady=(3, 8))
-        self.board_panel = board_panel
-        self.board_panel.pack_forget()
-        self.canvas.bind("<Configure>", lambda e: self.paint())
-        self.canvas.create_text(300, 200, text="경기 영상을 선택하세요",
-                                fill=MUTED, font=("맑은 고딕", 18), tags="empty")
-        tk.Label(view, textvariable=self.detail, bg=PANEL, fg=MUTED,
-                 anchor="w", padx=14, pady=12, font=("맑은 고딕", 10)).pack(fill="x")
-        tk.Label(self.root, textvariable=self.status, bg=BG, fg=TEXT, anchor="w",
-                 padx=24, pady=16, font=("맑은 고딕", 10)).pack(fill="x")
-
     def busy(self):
         return self.worker is not None and self.worker.is_alive()
-
-    def controls(self, running):
-        for button in (self.open_button, self.run_button, self.screen_button,
-                       self.tablet_button, self.cal_button, self.board_button,
-                       self.formation_button):
-            button.configure(state="disabled" if running else "normal")
-        self.stop_button.configure(state="normal" if running else "disabled")
-
-    def toggle_board(self):
-        if self.board_panel.winfo_manager():
-            self.board_panel.pack_forget()
-            self.board_button.configure(text="전술 보드 표시")
-        else:
-            self.board_panel.pack(side="right", anchor="ne", padx=8, pady=8)
-            self.board_button.configure(text="전술 보드 숨기기")
-            self.paint_board()
 
     def open_formation(self):
         if self.busy():
@@ -155,6 +72,44 @@ class App:
         self.formation = payload
         self.status.set("기준 배치를 저장했습니다. 선수 간 기준 거리와 팀 폭을 계산할 수 있습니다.")
 
+    def tag_event(self):
+        stamp = float(getattr(self, "last_info", {}).get("source_time_s", 0.0))
+        dialog = tk.Toplevel(self.root)
+        dialog.title("이벤트 태그")
+        dialog.configure(bg=BG)
+        tk.Label(dialog, text=f"현재 시점 {stamp:.1f}초", bg=BG, fg=TEXT).pack(padx=16, pady=10)
+        label = tk.StringVar(value=EVENT_LABELS[0])
+        ttk.Combobox(dialog, textvariable=label, values=EVENT_LABELS, state="readonly").pack(padx=16)
+        note = tk.Entry(dialog, width=36)
+        note.pack(padx=16, pady=10)
+        def save():
+            self.event_timeline.add(stamp, label.get(), note.get())
+            self.event_timeline.save(ROOT / "events.json")
+            self.status.set(f"{stamp:.1f}초 {label.get()} 이벤트를 저장했습니다.")
+            dialog.destroy()
+        ttk.Button(dialog, text="저장", command=save).pack(pady=(0, 12))
+
+    def show_briefing(self):
+        if not self.event_timeline.events:
+            messagebox.showinfo("브리핑", "먼저 영상 분석 중 이벤트를 하나 이상 태그하세요.")
+            return
+        reports = [summarize_event(event, self.analysis_rows, formation=getattr(self, "formation", None))
+                   for event in self.event_timeline.events]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("전술 브리핑")
+        text = tk.Text(dialog, width=72, height=20, wrap="word")
+        text.pack(padx=12, pady=12)
+        for report in reports:
+            text.insert("end", f"[{report['timestamp_s']:.1f}초] {report['label']}\n")
+            text.insert("end", f"분석 샘플 {report['samples']}개\n")
+            for team, values in report["teams"].items():
+                if values["mean_width_m"] is not None:
+                    text.insert("end", f"팀 {team} 평균 폭 {values['mean_width_m']:.1f}m\n")
+            if report.get("formation"):
+                text.insert("end", f"기준 배치 최대 편차 {report['formation']['max_m']:.1f}m\n")
+            text.insert("end", "\n")
+        text.configure(state="disabled")
+
     def open_video(self):
         if self.busy():
             return
@@ -164,17 +119,28 @@ class App:
             return
         try:
             with VideoSource(path) as source:
+                self.duration = source.duration_s
                 frame = source.read()
                 if frame is None:
                     raise ValueError("읽을 수 있는 프레임이 없습니다.")
             self.clear_preview_queue()
             self.path = Path(path)
+            self.input_key = ("file", str(self.path.resolve()))
+            self.pitch_polygon = None
+            self.calibration = None
+            self.event_timeline.clear()
+            self.analysis_rows.clear()
+            self.playhead = 0.0
+            self.last_info = {}
+            self.seek_scale.configure(to=max(.01, self.duration))
+            self.seek_position.set(0)
             self.last_raw = frame.pixels
             self.display = frame.pixels
             self.file_label.set(self.path.name)
             self.status.set("영상 분석을 시작하거나 현재 장면을 수동 보정하세요.")
             self.detail.set(f"{frame.width} × {frame.height} · 첫 프레임")
             self.paint()
+            self.refresh_playhead()
         except Exception as exc:
             messagebox.showerror("영상을 열 수 없습니다", str(exc))
 
@@ -210,6 +176,7 @@ class App:
         if self.busy():
             return
         self.clear_display()
+        self.analysis_rows.clear()
         self.stop.clear()
         self.controls(True)
         self.status.set("분석을 준비하고 있습니다.")
@@ -223,21 +190,28 @@ class App:
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
 
-    def start_video(self):
+    def export_video(self):
+        if self.busy():
+            return
         if self.path is None:
             messagebox.showinfo("영상 선택", "먼저 영상 파일을 선택하세요.")
+            return
+        if self.pitch_polygon is None:
+            self.select_pitch(on_ready=self.export_video)
             return
         path = self.path
         def run():
             detector = self.get_detector()
             output, summary = analyze_video(
                 path, detector, stop=self.stop,
-                calibration=self.calibration,
+                calibration=self.calibration, pitch_polygon=self.pitch_polygon,
                 on_frame=lambda rendered, row, raw: self.publish(rendered, raw, row))
             self.events.put(("result", (output, summary)))
         self.launch_worker(run)
 
     def start_screen(self):
+        if self.busy():
+            return
         text = simpledialog.askstring("화면 영역",
             "분석할 화면 영역을 입력하세요: 왼쪽, 위쪽, 너비, 높이\n"
             "예: 0, 0, 960, 540\n분석 창이 이 영역과 겹치면 화면이 반복 캡처됩니다.",
@@ -253,11 +227,23 @@ class App:
         except (TypeError, ValueError):
             messagebox.showerror("영역 확인", "정수 4개와 양수인 너비·높이를 입력하세요.")
             return
+        key = ("screen", tuple(values))
+        if getattr(self, "input_key", None) != key:
+            self.pitch_polygon = None
+            self.calibration = None
+        self.input_key = key
+        self.path = None
+        self.duration = self.playhead = 0.0
+        self.seek_position.set(0)
+        self.time_label.set("LIVE")
+        self.file_playback = False
         def run():
             detector = self.get_detector()
-            session = AnalysisSession(detector, calibration=self.calibration)
+            session = AnalysisSession(detector, calibration=self.calibration, pitch_polygon=self.pitch_polygon)
             self.events.put(("status", "화면 분석 중 · 고정 카메라 보정 적용" if self.calibration else
                              "화면 분석 중 · 거리 미보정 · 중지를 누르면 종료합니다."))
+            if self.pitch_polygon is None:
+                self.events.put(("status", "화면 미리보기 · 중지 → 더보기 → 그라운드 영역 선택 후 같은 화면에 다시 연결하세요."))
             with ScreenSource(region) as source:
                 while not self.stop.is_set():
                     tick = time.monotonic()
@@ -269,7 +255,7 @@ class App:
                                      {"screen": True, "input_status": "black_frame", "message": "검은 화면 · 입력을 확인하세요."})
                         self.stop.wait(.2)
                         continue
-                    detections = session.process(frame)
+                    detections = session.process(frame) if self.pitch_polygon is not None else []
                     rendered = annotate(frame.pixels, detections)
                     self.publish(rendered, frame.pixels,
                                  {"screen": True, "detections": [d.to_dict() for d in detections],
@@ -279,6 +265,8 @@ class App:
         self.launch_worker(run)
 
     def start_tablet(self):
+        if self.busy():
+            return
         text = simpledialog.askstring(
             "태블릿 카메라",
             "IP Webcam 주소를 입력하세요. 기본 주소를 그대로 사용하면 /video 스트림으로 연결합니다.",
@@ -293,10 +281,22 @@ class App:
             messagebox.showerror("카메라 주소 확인", str(exc), parent=self.root)
             return
 
+        key = ("tablet", source.url)
+        if getattr(self, "input_key", None) != key:
+            self.pitch_polygon = None
+            self.calibration = None
+        self.input_key = key
+        self.path = None
+        self.duration = self.playhead = 0.0
+        self.seek_position.set(0)
+        self.time_label.set("LIVE")
+        self.file_playback = False
         def run():
             detector = self.get_detector()
-            session = AnalysisSession(detector, calibration=self.calibration)
+            session = AnalysisSession(detector, calibration=self.calibration, pitch_polygon=self.pitch_polygon)
             self.events.put(("status", f"태블릿 카메라 연결 중 · {redact_url(source.url)}"))
+            if self.pitch_polygon is None:
+                self.events.put(("status", "태블릿 미리보기 · 중지 → 더보기 → 그라운드 영역 선택 후 같은 주소에 다시 연결하세요."))
             try:
                 with source:
                     got_frame = False
@@ -323,7 +323,7 @@ class App:
                                           "message": "검은 화면 · 태블릿 촬영 방향을 확인하세요."})
                             continue
                         tick = time.monotonic()
-                        detections = session.process(frame)
+                        detections = session.process(frame) if self.pitch_polygon is not None else []
                         rendered = annotate(frame.pixels, detections)
                         self.publish(rendered, frame.pixels,
                                      {"tablet": True,
@@ -348,12 +348,19 @@ class App:
             return
         try:
             rendered, raw, info = self.frames.get_nowait()
+            if self.file_playback and info.get("seek_epoch", 0) < self.requested_seek:
+                raise queue.Empty
             self.display = rendered
             if raw is not None:
                 self.last_raw = raw
             else:
                 self.last_raw = None
             self.last_info = info
+            if self.file_playback or "source_time_s" in info:
+                self.refresh_playhead()
+            if info.get("detections"):
+                self.analysis_rows.append({"source_time_s": info.get("source_time_s", info.get("received_time_s", 0.0)),
+                                           "detections": info.get("detections", [])})
             detections = info.get('detections', [])
             teams = {label: sum(1 for item in detections if item.get('team') == label)
                      for label in ('A', 'B')}
@@ -375,6 +382,8 @@ class App:
                 event, payload = self.events.get_nowait()
                 if event == "status":
                     self.status.set(payload)
+                elif event == "preview_output":
+                    self.last_output = payload
                 elif event == "result":
                     self.last_output, summary = payload
                     word = "완료" if summary["status"] == "completed" else "중지"
@@ -410,67 +419,22 @@ class App:
         self.canvas.create_image(w//2, h//2, image=self.photo, anchor="center")
         self.paint_board()
 
-    def paint_board(self):
-        if not hasattr(self, "board"):
+    def select_pitch(self, on_ready=None):
+        if self.busy():
             return
-        self.board.delete("all")
-        bw = max(self.board.winfo_width(), 180)
-        bh = max(self.board.winfo_height(), 240)
-        pad = 18
-        left, top, right, bottom = pad, pad, bw - pad, bh - pad
-        self.board.create_rectangle(left, top, right, bottom, outline="white", width=2)
-        mid = (left + right) / 2
-        self.board.create_line(mid, top, mid, bottom, fill="white")
-        self.board.create_oval(mid - (right-left)*.115, (top+bottom)/2 - (bottom-top)*.115,
-                               mid + (right-left)*.115, (top+bottom)/2 + (bottom-top)*.115,
-                               outline="white")
-        for x in (left, right):
-            self.board.create_rectangle(x, (top+bottom)/2-(bottom-top)*.20,
-                                        x + (right-left)*(.13 if x == left else -.13),
-                                        (top+bottom)/2+(bottom-top)*.20, outline="white")
-        detections = getattr(self, "last_info", {}).get("detections", [])
-        info = getattr(self, "last_info", {})
-        if hasattr(self, "board_log") and detections:
-            teams = {key: sum(item.get("team") == key for item in detections) for key in ("A", "B")}
-            calibrated = sum(bool(item.get("field_xy")) for item in detections)
-            stamp = info.get("source_time_s", info.get("received_time_s", 0.0))
-            line = (f"{float(stamp):6.1f}s  선수 {len(detections):2d}  "
-                    f"A {teams['A']:2d} / B {teams['B']:2d} / 좌표 {calibrated:2d}\n")
-            self.board_log.configure(state="normal")
-            self.board_log.insert("end", line)
-            if calibrated >= 2:
-                self.board_log.insert("end", f"         {metric_log(detections)}\n")
-            self.board_log.see("end")
-            # Keep the live panel bounded during long sessions.
-            if int(self.board_log.index("end-1c").split(".")[0]) > 80:
-                self.board_log.delete("1.0", "20.0")
-            self.board_log.configure(state="disabled")
-        if not detections:
-            self.board.create_text((left+right)/2, bottom+20, text="선수 위치 대기 중",
-                                   fill="white", font=("맑은 고딕", 9))
+        if self.last_raw is None:
+            messagebox.showinfo("그라운드 영역", "영상을 열거나 실시간 입력을 중지한 뒤 영역을 지정하세요.")
             return
-        # Use calibrated metres when available; otherwise keep a clearly labelled
-        # normalized screen estimate so the board remains useful during setup.
-        calibrated = any(item.get("field_xy") for item in detections)
-        for item in detections:
-            field = item.get("field_xy")
-            if field and len(field) == 2:
-                x, y = float(field[0]), float(field[1])
-                px = left + (x / 105.0) * (right-left)
-                py = bottom - (y / 68.0) * (bottom-top)
-            else:
-                box = item.get("xyxy") or [0, 0, 0, 0]
-                px = left + ((box[0]+box[2]) / 2.0 / max(1, self.last_raw.shape[1])) * (right-left)
-                py = top + (box[3] / max(1, self.last_raw.shape[0])) * (bottom-top)
-            px, py = max(left+4, min(right-4, px)), max(top+4, min(bottom-4, py))
-            team = item.get("team")
-            color = "#4aa3ff" if team == "A" else "#ff5b5b" if team == "B" else "#b7c2c9"
-            self.board.create_oval(px-8, py-8, px+8, py+8, fill=color, outline="white")
-            label = str(item.get("track_id") or "?")
-            self.board.create_text(px, py, text=label, fill="white", font=("Segoe UI", 8, "bold"))
-        self.board.create_text((left+right)/2, bottom+20,
-                               text="미터 기준" if calibrated else "화면 기준 · 보정 필요",
-                               fill="white", font=("맑은 고딕", 9))
+        from .pitch_editor import PitchEditor
+        size = (self.last_raw.shape[1], self.last_raw.shape[0])
+        def save(polygon):
+            from .pitch import PitchPolygon
+            self.pitch_polygon = PitchPolygon.from_points(polygon, width=size[0], height=size[1])
+            self.pitch_size = size
+            self.status.set("그라운드 영역 저장 · 이 영역 안에 발이 있는 사람만 추적합니다.")
+            if on_ready:
+                on_ready()
+        PitchEditor(self.root, self.last_raw.copy(), save)
 
     def calibrate(self):
         if self.busy():
@@ -485,7 +449,8 @@ class App:
         CalibrationWindow(self.root, raw.copy(), on_saved=self._set_calibration)
 
     def _set_calibration(self, calibration):
-        self.calibration = calibration
+        from .calibration import AutoPitchCalibration
+        self.calibration = AutoPitchCalibration(calibration)
         self.status.set("고정 카메라 보정이 준비되었습니다. 다음 분석부터 미터 좌표를 기록합니다.")
         self.detail.set(f"경기장 보정 활성 · {calibration.image_size[0]} × {calibration.image_size[1]} · 미터 좌표 사용 가능")
 
@@ -550,7 +515,7 @@ class FormationWindow:
 
     def _save(self):
         points = [list(map(float, point)) for point in self.positions]
-        data = {"version": 1, "field_size_m": {"length": 105.0, "width": 68.0},
+        data = {"version": 1, "team": "A", "field_size_m": {"length": 105.0, "width": 68.0},
                 "players": points, "team_width_m": max(p[0] for p in points)-min(p[0] for p in points)}
         path = ROOT / "formation.json"
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -561,8 +526,9 @@ class FormationWindow:
 
 class CalibrationWindow:
     def __init__(self, parent, pixels, on_saved=None):
-        from .calibration import ManualCalibration
+        from .calibration import ManualCalibration, suggest_pitch_corners
         self.Calibration = ManualCalibration
+        self.suggest_pitch_corners = suggest_pitch_corners
         self.pixels = pixels
         self.h, self.w = pixels.shape[:2]
         self.frame_id = uuid.uuid4().hex
@@ -588,6 +554,7 @@ class CalibrationWindow:
         bar = tk.Frame(self.window, bg=BG, pady=10)
         bar.pack(fill="x")
         ttk.Button(bar, text="보정 계산", command=self.fit).pack(side="left", padx=8)
+        ttk.Button(bar, text="자동 기준점 찾기", command=self.auto_points).pack(side="left", padx=8)
         ttk.Button(bar, text="처음부터", command=self.reset).pack(side="left", padx=8)
         ttk.Button(bar, text="보정·장면 저장", command=self.save).pack(side="left", padx=8)
         tk.Label(self.window, text="고정 카메라라면 이 보정을 영상 전체에 재사용할 수 있습니다. 팬·줌·위치 변화 후에는 다시 보정하세요.",
@@ -645,6 +612,21 @@ class CalibrationWindow:
             self.note.set("보정 계산 완료 · 기준점 안쪽의 두 지점을 클릭하면 거리를 측정합니다.")
         except ValueError as exc:
             messagebox.showerror("보정 불가", str(exc), parent=self.window)
+
+    def auto_points(self):
+        points = self.suggest_pitch_corners(self.pixels)
+        if points is None:
+            messagebox.showinfo("자동 기준점", "경기장 영역을 찾지 못했습니다. 수동으로 기준점을 지정하세요.", parent=self.window)
+            return
+        self.points = points
+        self.field = [[0.0, 0.0], [105.0, 0.0], [105.0, 68.0], [0.0, 68.0]]
+        self.canvas.delete("mark")
+        for index, point in enumerate(points, 1):
+            px, py = point[0] * self.scale, point[1] * self.scale
+            self.canvas.create_oval(px-4, py-4, px+4, py+4, fill=ACCENT, tags="mark")
+            self.canvas.create_text(px+9, py-10, text=str(index), fill="white", tags="mark")
+        self.calibration = None
+        self.note.set("자동 기준점 4개를 제안했습니다. 화면을 확인한 뒤 보정 계산을 누르세요.")
 
     def reset(self):
         self.points.clear()

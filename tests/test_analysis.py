@@ -1,10 +1,12 @@
 import json
 
 import numpy as np
+import pytest
 
 from offtheball.analysis import AnalysisSession
 from offtheball.detection import Detection
 from offtheball.inputs import Frame
+from offtheball.pitch import PitchPolygon
 
 
 class FakeTeams:
@@ -27,10 +29,24 @@ class FakeDetector:
     def reset_tracking(self):
         self.resets += 1
 
-    def track(self, _pixels):
+    def track(self, _pixels, pitch_polygon=None):
         self.calls += 1
         x = 8.0 + self.calls
         return [Detection((x, 5.0, x + 10.0, 25.0), .9, track_id=7)]
+
+
+class PolygonDetector(FakeDetector):
+    def __init__(self):
+        super().__init__()
+        self.polygons = []
+
+    def track(self, pixels, pitch_polygon=None):
+        self.polygons.append(pitch_polygon)
+        # This models a tracker that only ever receives the playing-area
+        # detections. A spectator outside the polygon must not get an ID.
+        if pitch_polygon is None:
+            return [Detection((70., 10., 78., 20.), .9, track_id=99)]
+        return [Detection((20., 10., 30., 30.), .9, track_id=7)]
 
 
 def frame(value=30, timestamp=0.0, size=(80, 60)):
@@ -118,3 +134,25 @@ def test_fixed_calibration_adds_field_coordinates_to_detections():
     detection = AnalysisSession(FakeDetector(), FakeTeams(), calibration=FixedCalibration()).process(frame())[0]
     assert detection.field_xy == (1.4, 2.5)
     assert detection.to_dict()["field_xy"] == [1.4, 2.5]
+
+
+def test_pitch_polygon_is_passed_before_tracking_and_excludes_after_resize():
+    detector = PolygonDetector()
+    polygon = [(5, 5), (55, 5), (55, 50), (5, 50)]
+    session = AnalysisSession(detector, FakeTeams(), pitch_polygon=polygon)
+    inside = session.process(frame(size=(80, 60), timestamp=0))[0]
+    assert inside.track_id == 7
+    assert detector.polygons[-1] == polygon
+
+    # Pixel coordinates are invalid after a source dimension change. Failing
+    # loudly prevents silently claiming that spectators were excluded.
+    with pytest.raises(ValueError, match="pitch polygon dimensions"):
+        session.process(frame(size=(100, 60), timestamp=.1))
+
+
+def test_confirmed_pitch_polygon_carries_dimensions():
+    polygon = PitchPolygon.from_points([(5, 5), (55, 5), (55, 50), (5, 50)], width=80, height=60)
+    assert polygon.matches(80, 60)
+    assert not polygon.matches(100, 60)
+    assert polygon.contains(20, 20)
+    assert not polygon.contains(70, 20)

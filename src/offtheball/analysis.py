@@ -21,12 +21,14 @@ class AnalysisSession:
 
     def __init__(self, detector: Any, team_classifier: Any | None = None,
                  *, calibration: Any | None = None, max_gap_s: float = 2.0,
-                 trail_length: int = 15) -> None:
+                 trail_length: int = 15, pitch_polygon: Any | None = None) -> None:
         self.detector = detector
         self.team_classifier = team_classifier if team_classifier is not None else self._new_team_classifier()
         self.max_gap_s = float(max_gap_s)
         self.trail_length = max(1, int(trail_length))
         self.calibration = calibration
+        self.pitch_polygon = pitch_polygon
+        self._pitch_polygon_size: tuple[int, int] | None = None
         self.scene_id = 0
         self._last_timestamp: float | None = None
         self._last_size: tuple[int, int] | None = None
@@ -118,7 +120,35 @@ class AnalysisSession:
 
     def _call_detector(self, pixels):
         track = getattr(self.detector, "track", None)
-        return list(track(pixels) if callable(track) else self.detector.detect(pixels))
+        if not callable(track):
+            return list(self.detector.detect(pixels))
+        polygon = self.pitch_polygon
+        size = (int(pixels.shape[1]), int(pixels.shape[0]))
+        if polygon is not None:
+            polygon_size = getattr(polygon, "width", None), getattr(polygon, "height", None)
+            polygon_points = getattr(polygon, "points", polygon)
+            if polygon_size[0] is not None:
+                if polygon_size != size:
+                    raise ValueError(
+                        "pitch polygon dimensions do not match the input frame; recalibrate the playing area"
+                    )
+                else:
+                    polygon = polygon_points
+            else:
+                if self._pitch_polygon_size is None:
+                    self._pitch_polygon_size = size
+                elif self._pitch_polygon_size != size:
+                    raise ValueError(
+                        "pitch polygon dimensions do not match the input frame; recalibrate the playing area"
+                    )
+        try:
+            return list(track(pixels, pitch_polygon=polygon))
+        except TypeError as exc:
+            # Keep lightweight/legacy detector doubles working while making
+            # the production detector receive the pre-association filter.
+            if "pitch_polygon" not in str(exc):
+                raise
+            return list(track(pixels))
 
     def _team_labels(self, frame, detections):
         if self.team_classifier is None:
@@ -160,6 +190,12 @@ class AnalysisSession:
         self._last_small = self._small_frame(frame.pixels)
         self._last_hist = self._histogram(frame.pixels)
         self._had_valid_frame = True
+        updater = getattr(self.calibration, "update", None)
+        if callable(updater):
+            try:
+                updater(frame.pixels)
+            except (ValueError, cv2.error):
+                pass
 
         now = float(frame.timestamp_s)
         for key in list(self._last_seen):

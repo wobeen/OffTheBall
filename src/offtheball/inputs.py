@@ -86,6 +86,23 @@ class VideoSource:
         self._index += 1
         return frame
 
+    @property
+    def duration_s(self):
+        if self._capture is None:
+            return 0.0
+        return max(0.0, self._capture.get(cv2.CAP_PROP_FRAME_COUNT) / self.fps)
+
+    def seek(self, seconds):
+        if self._capture is None:
+            raise RuntimeError("Video source is not open")
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("Seek time must be finite and nonnegative")
+        index = min(round(seconds * self.fps), max(0, int(self._capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1))
+        if not self._capture.set(cv2.CAP_PROP_POS_FRAMES, index):
+            raise ValueError("영상의 선택한 시점으로 이동하지 못했습니다.")
+        self._index = index
+        self._last_timestamp = -1.0
+
     def __iter__(self) -> Iterator[Frame]:
         while (frame := self.read()) is not None:
             yield frame
