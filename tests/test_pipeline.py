@@ -39,6 +39,10 @@ def test_encoded_result_and_timestamped_records(clip, tmp_path):
     assert [r["frame_index"] for r in rows] == list(range(6))
     assert rows[-1]["source_time_s"] > rows[0]["source_time_s"]
     assert rows[0]["detections"][0]["field_xy"] is None
+    assert rows[0]["schema_version"] == 2
+    assert rows[0]["calibration_status"] == "not_calibrated"
+    assert rows[0]["calibration"]["source"] is None
+    assert summary["schema_version"] == 2
     cap = cv2.VideoCapture(str(directory/"analysis.mp4"))
     frames = []
     while True:

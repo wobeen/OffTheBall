@@ -56,6 +56,33 @@ class AnalysisSession:
         return bool(self.team_classifier is not None and
                     getattr(self.team_classifier, "ready", False))
 
+    def calibration_diagnostics(self) -> dict[str, Any]:
+        """Return a JSON-safe, stable view of the active calibration state."""
+        if self.calibration is None:
+            return {
+                "status": "not_calibrated", "source": None, "age_frames": None,
+                "stale_after_frames": None, "last_update": None,
+                "inlier_count": None, "inlier_ratio": None,
+                "reprojection_error_px": None, "projection_jump_m": None,
+            }
+        getter = getattr(self.calibration, "diagnostics", None)
+        raw = getter() if callable(getter) else {}
+        defaults = {
+            "status": "active", "source": "fixed_calibration", "age_frames": 0,
+            "stale_after_frames": None, "last_update": None,
+            "inlier_count": None, "inlier_ratio": None,
+            "reprojection_error_px": None, "projection_jump_m": None,
+        }
+        if isinstance(raw, dict):
+            defaults.update({key: raw.get(key) for key in defaults if key in raw})
+        if defaults["status"] not in {"active", "stale", "invalid", "not_calibrated"}:
+            defaults["status"] = "invalid"
+        for key in ("inlier_ratio", "reprojection_error_px", "projection_jump_m"):
+            value = defaults[key]
+            if value is not None and not np.isfinite(value):
+                defaults[key] = None
+        return defaults
+
     def _reset_detector_tracking(self) -> None:
         reset = getattr(self.detector, "reset_tracking", None)
         if callable(reset):

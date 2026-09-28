@@ -65,6 +65,26 @@ class PlaybackMixin:
                 self.playback_paused.set()
                 self.pause_button.configure(text="▶")
 
+    def _apply_playback_commands(self, source, session, epoch):
+        """Apply the latest seek and every calibration update in the worker."""
+        seek_target = None
+        while True:
+            try:
+                command, payload = self.playback_commands.get_nowait()
+            except queue.Empty:
+                break
+            if command == "seek":
+                seek_target = payload
+            elif command == "calibration":
+                session.calibration = payload
+        force_frame = False
+        if seek_target is not None:
+            source.seek(seek_target[0])
+            session.reset()
+            epoch = seek_target[1]
+            force_frame = True
+        return epoch, force_frame
+
     def start_video(self):
         if self.busy():
             return
@@ -93,17 +113,9 @@ class PlaybackMixin:
                     epoch = 0
                     force_frame = True
                     while not self.stop.is_set():
-                        target = None
-                        while True:
-                            try:
-                                command, target = self.playback_commands.get_nowait()
-                            except queue.Empty:
-                                break
-                        if target is not None:
-                            source.seek(target[0])
-                            session.reset()
-                            epoch = target[1]
-                            force_frame = True
+                        epoch, command_forced_frame = self._apply_playback_commands(
+                            source, session, epoch)
+                        force_frame = force_frame or command_forced_frame
                         if self.playback_paused.is_set() and not force_frame:
                             self.stop.wait(.03)
                             continue
@@ -112,9 +124,12 @@ class PlaybackMixin:
                         if frame is None:
                             break
                         detections = session.process(frame, black=is_black_frame(frame.pixels))
-                        row = {"source_time_s": frame.timestamp_s, "frame_index": frame.index,
+                        row = {"schema_version": 2,
+                               "source_time_s": frame.timestamp_s, "frame_index": frame.index,
                                "scene_id": session.scene_id, "seek_epoch": epoch,
                                "detections": [d.to_dict() for d in detections],
+                               "calibration_status": session.calibration_diagnostics()["status"],
+                               "calibration": session.calibration_diagnostics(),
                                "processing_s": time.monotonic() - tick}
                         records.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                         self.publish(annotate(frame.pixels, detections), frame.pixels, row)

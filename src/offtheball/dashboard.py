@@ -101,6 +101,9 @@ class DashboardMixin:
         self.brief_button.pack(side="left", padx=3)
         self.board_button = ttk.Button(top, text="전술 보드", style="Dashboard.TButton",
                                        command=self.toggle_board)
+        self.help_button = ttk.Button(top, text="도움말", style="Dashboard.TButton",
+                                      command=self.show_help)
+        self.help_button.pack(side="right", padx=3)
         self.stop_button = ttk.Button(top, text="중지", style="Dashboard.TButton",
                                       command=self.stop.set, state="disabled")
 
@@ -261,6 +264,8 @@ class DashboardMixin:
             menu.add_command(label="결과 폴더", command=self.open_outputs)
             menu.add_command(label="전술 보드 표시/숨기기", command=self.toggle_board)
             menu.add_command(label="전체 영상 결과 저장", command=self.export_video)
+            menu.add_separator()
+            menu.add_command(label="사용 방법", command=self.show_help)
             self._compact_menu.configure(menu=menu)
         if not self._compact_menu.winfo_manager():
             self._compact_menu.pack(side="right", padx=(4, 0))
@@ -279,9 +284,13 @@ class DashboardMixin:
         # Event tagging, the pitch, and the briefing stay available while a
         # worker runs so the analyst can mark a live moment.
         buttons = (self.open_button, self.run_button, self.screen_button,
-                   self.tablet_button, self.cal_button, self.formation_button)
+                   self.tablet_button)
         for button in buttons:
             button.configure(state="disabled" if running else "normal")
+        # A formation is UI-only state and is safe to edit during analysis.
+        # File playback can be paused and calibrated on its current raw frame.
+        self.cal_button.configure(state="normal")
+        self.formation_button.configure(state="normal")
         self.stop_button.configure(state="normal" if running else "disabled")
 
     def toggle_board(self):
@@ -318,10 +327,19 @@ class DashboardMixin:
         self.board.create_rectangle(right - box_w, (top + bottom - box_h) / 2,
                                     right, (top + bottom + box_h) / 2, outline="#e6fff1")
         detections = getattr(self, "last_info", {}).get("detections", [])
-        for item in detections:
-            field = item.get("field_xy")
-            if not field or len(field) != 2:
-                continue  # Never mix pixel detections into the metre pitch.
+        mapped = [item for item in detections
+                  if item.get("field_xy") and len(item["field_xy"]) == 2]
+        if detections and not mapped:
+            calibration_status = getattr(self, "last_info", {}).get("calibration_status")
+            if calibration_status == "not_calibrated" or getattr(self, "calibration", None) is None:
+                message = "기준 보정 후\n선수 위치가 표시됩니다"
+            else:
+                message = "현재 선수 위치를\n경기장 좌표로 계산할 수 없습니다"
+            self.board.create_text(width / 2, height / 2, text=message,
+                                   fill="#d8eee2", justify="center",
+                                   font=("Segoe UI", 10, "bold"), tags="board_status")
+        for item in mapped:
+            field = item["field_xy"]
             x, y = float(field[0]), float(field[1])
             px = left + max(0, min(105, x)) * scale
             py = bottom - max(0, min(68, y)) * scale

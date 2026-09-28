@@ -27,25 +27,48 @@ def suggest_pitch_corners(pixels):
             [float(x+w-1), float(y+h-1)], [float(x), float(y+h-1)]]
 
 class AutoPitchCalibration:
-    def __init__(self, calibration):
+    def __init__(self, calibration, *, stale_after_frames=60):
+        if not isinstance(stale_after_frames, int) or isinstance(stale_after_frames, bool) or stale_after_frames < 1:
+            raise ValueError("stale_after_frames must be a positive integer")
         self.current = calibration
         self.frame_id = calibration.frame_id
         self.image_size = calibration.image_size
         self._corners = np.asarray(calibration.image_points[:4], dtype=float)
+        self.stale_after_frames = stale_after_frames
+        self._age_frames = 0
+        self._last_update = "manual_seed"
 
     def update(self, pixels):
+        self._age_frames += 1
         corners = suggest_pitch_corners(pixels)
         if corners is None:
+            self._last_update = "field_region_not_found"
             return False
         corners = np.asarray(corners, dtype=float)
         if np.mean(np.linalg.norm(corners - self._corners, axis=1)) < 12:
+            self._age_frames = 0
+            self._last_update = "field_region_confirmed"
             return False
         self.current = ManualCalibration.fit(corners, [[0,0],[105,0],[105,68],[0,68]], image_size=self.image_size, frame_id=self.frame_id)
         self._corners = corners
+        self._age_frames = 0
+        self._last_update = "field_region_updated"
         return True
 
     def project(self, points, *, image_size, frame_id):
         return self.current.project(points, image_size=image_size, frame_id=frame_id)
+
+    def diagnostics(self):
+        return {
+            "status": "stale" if self._age_frames > self.stale_after_frames else "active",
+            "source": "green_region_bbox",
+            "age_frames": self._age_frames,
+            "stale_after_frames": self.stale_after_frames,
+            "last_update": self._last_update,
+            "inlier_count": None,
+            "inlier_ratio": None,
+            "reprojection_error_px": None,
+        }
 
 
 def _points(value, name, minimum=0):
@@ -161,6 +184,18 @@ class ManualCalibration:
                 "max_position_error_m": float(errors[valid].max()) if valid.any() else None,
                 "segments": distances,
                 "median_relative_distance_error_ge_10m": float(np.median(benchmark)) if benchmark else None}
+
+    def diagnostics(self):
+        return {
+            "status": "active",
+            "source": "manual_fixed_frame",
+            "age_frames": 0,
+            "stale_after_frames": None,
+            "last_update": "manual",
+            "inlier_count": len(self.image_points),
+            "inlier_ratio": 1.0,
+            "reprojection_error_px": None,
+        }
 
     def save(self, path):
         payload = {"version": 1, "scope": "single_frame", "units": "metres", "image_size": list(self.image_size),
