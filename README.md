@@ -73,6 +73,15 @@ $env:PYTHONPATH = "$PWD\src"
 
 임시 테스트 폴더는 매 실행마다 새 이름을 사용하세요.
 
+## Google Colab GPU 분석
+1. [OffTheBall_Colab.ipynb](OffTheBall_Colab.ipynb)을 Google Colab에서 엽니다.
+2. 런타임 유형을 T4 GPU로 변경합니다.
+3. 셀을 위에서부터 실행하고 경기 영상 한 개를 업로드합니다.
+4. 마지막 셀에서 분석 영상과 JSON 기록이 담긴 ZIP을 받습니다.
+
+코랩에서는 데스크톱 UI, 화면 캡처, 태블릿 실시간 연결을 사용하지 않습니다. 녹화된 영상의 전체 분석에 사용합니다. `PersonDetector`의 기본 장치는 `auto`이므로 CUDA가 있으면 GPU를, 없으면 CPU를 선택합니다.
+용량이 큰 전체 경기 영상은 업로드 셀의 `USE_GOOGLE_DRIVE`를 `True`로 바꾸고 `DRIVE_VIDEO`에 Drive 경로를 입력할 수 있습니다.
+
 ## 새 분석 화면 (UI_Rebuild)
 - 상단에 주요 메뉴, 왼쪽에 영상과 시간바, 오른쪽에 전술 보드·간격 지표·이벤트 목록을 배치했습니다.
 - 영상 파일을 연 뒤 시간바를 클릭하거나 드래그하면 원하는 장면으로 이동합니다. 분석 중에도 이동·일시정지가 가능합니다.

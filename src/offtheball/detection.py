@@ -51,7 +51,8 @@ class Detection:
 
 
 class PersonDetector:
-    def __init__(self, model=None, confidence=0.25, image_size=960, cpu_threads=4):
+    def __init__(self, model=None, confidence=0.25, image_size=960, cpu_threads=4,
+                 device="auto"):
         path = Path(model) if model else ROOT / "models/yolo11n.pt"
         if not path.is_file():
             raise FileNotFoundError("탐지 모델이 없습니다. 먼저 설치.cmd를 실행하세요.")
@@ -60,11 +61,15 @@ class PersonDetector:
         if not isinstance(cpu_threads, int) or isinstance(cpu_threads, bool) or cpu_threads < 1:
             raise ValueError('cpu_threads must be a positive integer')
         import torch
-        torch.set_num_threads(cpu_threads)
+        if device == "auto":
+            device = 0 if torch.cuda.is_available() else "cpu"
+        if device == "cpu":
+            torch.set_num_threads(cpu_threads)
         from ultralytics import YOLO
         self.model = YOLO(str(path))
         self.confidence = confidence
         self.image_size = image_size
+        self.device = device
         self._pitch_polygon = None
         self._pitch_filter_installed = False
         self._tracker_registered = False
@@ -72,7 +77,7 @@ class PersonDetector:
     def detect(self, pixels):
         """Return raw person detections without tracker state."""
         result = self.model.predict(pixels, classes=[0], conf=self.confidence,
-                                    imgsz=self.image_size, device="cpu",
+                                    imgsz=self.image_size, device=self.device,
                                     verbose=False, save=False)[0]
         return self._detections_from_result(result)
 
@@ -94,7 +99,7 @@ class PersonDetector:
             self._tracker_registered = True
         result = self.model.predict(pixels, mode="track", tracker="bytetrack.yaml", classes=[0],
                                     conf=self.confidence, imgsz=self.image_size,
-                                    device="cpu", verbose=False, save=False)[0]
+                                    device=self.device, verbose=False, save=False)[0]
         detections = self._detections_from_result(result)
         if result.boxes is None or result.boxes.id is None:
             return detections
