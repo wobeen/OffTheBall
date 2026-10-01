@@ -1,0 +1,7 @@
+# Colab already provides a CUDA-enabled PyTorch build. Do not replace it.
+ultralytics==8.4.152
+opencv-python-headless==4.14.0.94
+numpy==2.0.2
+scipy==1.16.3
+polars==1.44.2
+lap==0.5.13
